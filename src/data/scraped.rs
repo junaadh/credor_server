@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 ///
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ScrapedData {
-    data: Vec<MatchedLink>,
+    pub data: Vec<MatchedLink>,
 }
 
 ///
@@ -19,11 +19,11 @@ pub struct ScrapedData {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MatchedLink {
     /// user name of the user which posted the deepfake
-    user: String,
+    pub user: String,
     /// the platform at which the deepfake was posted to
-    platform: String,
+    pub platform: String,
     /// the link of the post which is flagged as the deepfake
-    link: String,
+    pub link: String,
 }
 
 ///
@@ -33,7 +33,7 @@ pub struct MatchedLink {
 ///
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ForwardData {
-    data: Vec<SanitizedLink>,
+    pub data: Vec<SanitizedLink>,
 }
 
 ///
@@ -46,10 +46,10 @@ pub struct ForwardData {
 pub struct SanitizedLink {
     /// the unique user identifier
     // FIXME: implement better user identification
-    userid: u32,
+    pub userid: u32,
     /// the unique link identifier
     // FIXME: implement better user identification
-    linkid: u32,
+    pub linkid: u32,
     /// the link of the post flagged as deepfake
-    link: String,
+    pub link: String,
 }

@@ -1,5 +1,6 @@
-use actix_web::{HttpResponse, Responder, http::StatusCode};
+use actix_web::{HttpResponse, Responder, get};
 
-pub async fn health() -> impl Responder {
+#[get("/health")]
+pub async fn health_handler() -> impl Responder {
     HttpResponse::Ok()
 }
