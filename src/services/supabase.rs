@@ -30,13 +30,14 @@
 
 use actix_web::web;
 use anyhow::Result;
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
     AppState, AuthMiddleware,
     admin::guard,
-    data::{AuthError, AuthResponse},
+    data::{AuthError, AuthResponse, Role},
     handlers,
 };
 
@@ -131,24 +132,21 @@ impl SupabaseService {
             .await
             .map_err(|e| {
                 AuthError::Request(format!(
-                    "Unable to connect to authentication service. Please try again later. (Error: {})",
-                    e
+                    "Unable to connect to authentication service. Please try again later. (Error: {e})"
                 ))
             })?;
 
         let status = res.status();
         let body = res.text().await.map_err(|e| {
             AuthError::Request(format!(
-                "Received an invalid response from authentication service. (Error: {})",
-                e
+                "Received an invalid response from authentication service. (Error: {e})"
             ))
         })?;
 
         if status.is_success() {
             let ok = serde_json::from_str(&body).map_err(|e| {
                 AuthError::Parse(format!(
-                    "Received an invalid response from authentication service. (Error: {})",
-                    e
+                    "Received an invalid response from authentication service. (Error: {e})"
                 ))
             })?;
             Ok(ok)
@@ -160,8 +158,7 @@ impl SupabaseService {
                     msg: s.msg,
                 }),
                 Err(e) => Err(AuthError::Other(format!(
-                    "An unexpected error occurred while processing the authentication response. (Error: {})",
-                    e
+                    "An unexpected error occurred while processing the authentication response. (Error: {e})"
                 ))),
             }
         }
@@ -230,8 +227,7 @@ impl SupabaseService {
                 code: 502,
                 error_code: "bad_gateway".to_owned(),
                 msg: format!(
-                    "Unable to connect to authentication service. Please try again later. (Error: {})",
-                    e
+                    "Unable to connect to authentication service. Please try again later. (Error: {e})"
                 ),
             })?;
 
@@ -239,10 +235,7 @@ impl SupabaseService {
         let body = res.text().await.map_err(|e| SupabaseErrorResponse {
             code: 502,
             error_code: "bad_gateway".to_owned(),
-            msg: format!(
-                "Received an invalid response from authentication service. (Error: {})",
-                e
-            ),
+            msg: format!("Received an invalid response from authentication service. (Error: {e})"),
         })?;
 
         if status.is_success() {
@@ -251,8 +244,7 @@ impl SupabaseService {
                     code: 502,
                     error_code: "bad_gateway".to_string(),
                     msg: format!(
-                        "Received an invalid response from authentication service. (Error: {})",
-                        e
+                        "Received an invalid response from authentication service. (Error: {e})"
                     ),
                 })?;
             Ok(res)
@@ -263,8 +255,7 @@ impl SupabaseService {
                     code: 500,
                     error_code: "internal_server_error".to_string(),
                     msg: format!(
-                        "An unexpected error occurred while processing the authentication response. (Error: {})",
-                        e
+                        "An unexpected error occurred while processing the authentication response. (Error: {e})"
                     ),
                 }),
             }
@@ -354,8 +345,7 @@ impl SupabaseService {
                 code: 502,
                 error_code: "bad_gateway".to_owned(),
                 msg: format!(
-                    "Unable to connect to authentication service. Please try again later. (Error: {})",
-                    e
+                    "Unable to connect to authentication service. Please try again later. (Error: {e})"
                 ),
             })?;
 
@@ -363,10 +353,7 @@ impl SupabaseService {
         let body = res.text().await.map_err(|e| SupabaseErrorResponse {
             code: 502,
             error_code: "bad_gateway".to_owned(),
-            msg: format!(
-                "Received an invalid response from authentication service. (Error: {})",
-                e
-            ),
+            msg: format!("Received an invalid response from authentication service. (Error: {e})"),
         })?;
 
         if status.is_success() {
@@ -378,11 +365,166 @@ impl SupabaseService {
                     code: 500,
                     error_code: "internal_server_error".to_string(),
                     msg: format!(
-                        "An unexpected error occurred while processing the delete request. (Error: {})",
-                        e
+                        "An unexpected error occurred while processing the delete request. (Error: {e})"
                     ),
                 }),
             }
         }
     }
+
+    pub async fn update(
+        data: &web::Data<AppState>,
+        user: &AuthMiddleware,
+        input: UpdateUserInput,
+    ) -> anyhow::Result<()> {
+        // update user metadata in auth table
+        if input.email.is_some()
+            || input.password.is_some()
+            || input.role.is_some()
+            || input.name.is_some()
+        {
+            let client = Client::new();
+            let mut metadata = serde_json::Map::new();
+
+            if let Some(r) = &input.role {
+                metadata.insert(String::from("role"), serde_json::to_value(r)?);
+            }
+
+            if let Some(n) = &input.name {
+                metadata.insert(
+                    String::from("name"),
+                    serde_json::Value::String(n.to_owned()),
+                );
+            }
+
+            let mut payload = serde_json::Map::new();
+            if let Some(e) = &input.email {
+                let key = String::from("email");
+                let value = serde_json::Value::String(e.to_owned());
+
+                metadata.insert(key.clone(), value.clone());
+                payload.insert(key, value);
+            }
+
+            if let Some(p) = &input.password {
+                payload.insert(
+                    String::from("password"),
+                    serde_json::Value::String(p.to_owned()),
+                );
+            }
+
+            if !metadata.is_empty() {
+                payload.insert(
+                    String::from("user_metadata"),
+                    serde_json::Value::Object(metadata),
+                );
+            }
+
+            let res = client
+                .put(format!(
+                    "{}/auth/v1/admin/users/{}",
+                    data.supabase_url, user.id
+                ))
+                .bearer_auth(&data.supabase_service_key)
+                .header("apikey", &data.supabase_anon_key)
+                .json(&payload)
+                .send()
+                .await?;
+
+            if !res.status().is_success() {
+                let body = res.text().await?;
+                anyhow::bail!("Supabase auth update failed {body}");
+            }
+        }
+
+        let mut tx = data.db.begin().await?;
+
+        // Update user_profiles
+        sqlx::query!(
+            r#"
+            UPDATE user_profiles
+            SET
+                name = COALESCE($1, name),
+                age = COALESCE($2, age),
+                gender = COALESCE($3, gender)
+            WHERE user_id = $4
+            "#,
+            input.name,
+            input.age,
+            input.gender,
+            user.id
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        // Update user_settings
+        sqlx::query!(
+            r#"
+            UPDATE user_settings
+            SET
+                email = COALESCE($1, email),
+                scan_defaults = COALESCE($2, scan_defaults),
+                theme = COALESCE($3, theme),
+                notifications = COALESCE($4, notifications),
+                language = COALESCE($5, language),
+                timezone = COALESCE($6, timezone),
+                updated_at = NOW()
+            WHERE user_id = $7
+            "#,
+            input.email,
+            input.scan_defaults,
+            input.theme,
+            input.notifications,
+            input.language,
+            input.timezone,
+            user.id
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+
+        Ok(())
+    }
+}
+
+use validator::Validate;
+
+#[derive(Debug, Deserialize, Validate)]
+pub struct UpdateUserInput {
+    #[validate(email(message = "Invalid email"))]
+    #[serde(default)]
+    pub email: Option<String>,
+
+    #[validate(length(min = 8, max = 64, message = "Password must be at least 8 characters"))]
+    #[serde(default)]
+    pub password: Option<String>,
+
+    #[serde(default)]
+    pub role: Option<Role>,
+
+    #[validate(length(min = 1, message = "Name cannot be empty"))]
+    #[serde(default)]
+    pub name: Option<String>,
+
+    #[serde(default)]
+    pub age: Option<i32>,
+
+    #[serde(default)]
+    pub gender: Option<String>,
+
+    #[serde(default)]
+    pub scan_defaults: Option<serde_json::Value>,
+
+    #[serde(default)]
+    pub theme: Option<String>,
+
+    #[serde(default)]
+    pub notifications: Option<serde_json::Value>,
+
+    #[serde(default)]
+    pub language: Option<String>,
+
+    #[serde(default)]
+    pub timezone: Option<String>,
 }

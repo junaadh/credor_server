@@ -2,12 +2,13 @@
 //!
 //! This module provides handlers for creating scan jobs, listing history,
 //! and fetching scan results for authenticated users. All endpoints require JWT auth.
+//!
+//! All logging uses structured tracing with key fields for observability.
 
 use crate::{AppState, auth_middleware::AuthMiddleware};
-use actix_web::{HttpRequest, HttpResponse, Responder, web};
-use chrono::NaiveDateTime;
+use actix_web::{HttpResponse, Responder, web};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use uuid::Uuid;
 
 /// Represents a scan job created by a user.
@@ -18,11 +19,11 @@ pub struct ScanJob {
     /// User who created the job
     pub user_id: Uuid,
     /// Target URL or keyword for the scan
-    pub target_url: String,
+    pub target: String,
     /// Current status (pending, running, completed, failed, etc.)
     pub status: String,
     /// When the job was created
-    pub created_at: NaiveDateTime,
+    pub created_at: DateTime<Utc>,
 }
 
 /// Represents a single scan result for a media item.
@@ -37,7 +38,7 @@ pub struct ScanResult {
     /// Model label (e.g., "REAL", "FAKE")
     pub label: String,
     /// When the result was created
-    pub created_at: NaiveDateTime,
+    pub created_at: DateTime<Utc>,
 }
 
 /// Creates a new deepfake detection scan job for the authenticated user.
@@ -58,12 +59,12 @@ pub struct ScanResult {
 /// # Request Body (JSON)
 /// ```json
 /// {
-///   "target_url": "https://example.com/media/video.mp4"  // String, HTTP/HTTPS URL to media
+///   "target": "https://example.com/media/video.mp4"  // String, HTTP/HTTPS URL to media
 /// }
 /// ```
 ///
 /// # Validation Rules
-/// - `target_url`: Must be a valid HTTP or HTTPS URL
+/// - `target`: Must be a valid HTTP or HTTPS URL
 /// - URL must start with "http" (http:// or https://)
 /// - Required field - cannot be null or empty
 ///
@@ -73,14 +74,14 @@ pub struct ScanResult {
 /// {
 ///   "job_id": "550e8400-e29b-41d4-a716-446655440000",
 ///   "user_id": "123e4567-e89b-12d3-a456-426614174000",
-///   "target_url": "https://example.com/media/video.mp4",
+///   "target": "https://example.com/media/video.mp4",
 ///   "status": "pending",
 ///   "created_at": "2024-01-15T10:30:00"
 /// }
 /// ```
 ///
 /// # Error Responses
-/// - `400 Bad Request`: Invalid or missing target_url (non-HTTP URL, empty field)
+/// - `400 Bad Request`: Invalid or missing target (non-HTTP URL, empty field)
 /// - `401 Unauthorized`: Missing or invalid JWT token
 /// - `500 Internal Server Error`: Database errors or job creation failure
 ///
@@ -105,94 +106,67 @@ pub struct ScanResult {
 ///     'Authorization': 'Bearer ' + userToken
 ///   },
 ///   body: JSON.stringify({
-///     target_url: 'https://example.com/suspicious-video.mp4'
+///     target: 'https://example.com/suspicious-video.mp4'
 ///   })
 /// });
 /// ```
-#[tracing::instrument(skip(user, app_state, payload, req), fields(user_id = %user.id))]
+#[tracing::instrument(skip(user, app_state, payload), fields(user_id = %user.id))]
 pub async fn post_scan(
     user: AuthMiddleware,
     app_state: web::Data<AppState>,
-    payload: web::Json<serde_json::Value>, // expects {"target_url": ...}
-    req: HttpRequest,
+    payload: web::Json<serde_json::Value>, // expects {"target": ...}
 ) -> impl Responder {
     let db = app_state.db.clone();
-    let target_url = match payload.get("target_url").and_then(|v| v.as_str()) {
+    let target = match payload.get("target").and_then(|v| v.as_str()) {
         Some(url) if url.starts_with("http") => url,
         _ => {
-            crate::tracing::log_event(
-                db.clone(),
-                "WARN",
-                "user_scan",
-                "Invalid target URL provided for scan",
-                Some(user.id),
-                Some(json!({
-                    "user_id": user.id,
-                    "provided_payload": payload.0,
-                    "request_context": crate::tracing::utils::extract_request_context(&req)
-                })),
-            )
-            .await;
-
+            tracing::warn!(
+                user.id = %user.id,
+                "Invalid or missing target in scan request"
+            );
             return HttpResponse::BadRequest()
-                .json(serde_json::json!({"error": "Invalid or missing target_url"}));
+                .json(serde_json::json!({"error": "Invalid or missing target"}));
         }
     };
     tracing::info!(
         user.id = %user.id,
-        target_url = %target_url,
+        target = %target,
         "Creating new scan job"
     );
 
+    let job_id = Uuid::new_v4();
+
     let row = sqlx::query_as::<_, ScanJob>(
-        r#"INSERT INTO scan_jobs (user_id, target_url, status) VALUES ($1, $2, 'pending') RETURNING job_id, user_id, target_url, status, created_at"#,
-        )
-        .bind(user.id)
-        .bind(target_url)
-        .fetch_one(db.as_ref())
-        .await;
+        r#"INSERT INTO scan_jobs (job_id, user_id, target, status)
+        VALUES ($1, $2, $3, 'pending')
+        RETURNING job_id, user_id, target, status, timestamp AS created_at
+    "#,
+    )
+    .bind(job_id)
+    .bind(user.id)
+    .bind(target)
+    .fetch_one(db.as_ref())
+    .await;
 
     match row {
         Ok(job) => {
-            crate::tracing::log_user_action(
-                db.clone(),
-                "scan_job_created",
-                user.id,
-                Some(json!({
-                    "job_id": job.job_id,
-                    "target_url": target_url,
-                    "status": "pending"
-                })),
-                Some(crate::tracing::utils::extract_request_context(&req)),
-            )
-            .await;
-
             tracing::info!(
                 user.id = %user.id,
                 job.id = %job.job_id,
-                target_url = %target_url,
+                target = %target,
                 "Scan job created successfully"
             );
             HttpResponse::Ok().json(&job)
         }
         Err(e) => {
-            crate::tracing::log_event(
-                db.clone(),
-                "ERROR",
-                "user_scan",
-                "Failed to create scan job",
-                Some(user.id),
-                Some(json!({
-                    "user_id": user.id,
-                    "target_url": target_url,
-                    "error": e.to_string(),
-                    "request_context": crate::tracing::utils::extract_request_context(&req)
-                })),
-            )
-            .await;
-
+            tracing::error!(
+                user.id = %user.id,
+                target = %target,
+                error = ?e,
+                "Failed to create scan job"
+            );
             HttpResponse::InternalServerError()
-                .json(serde_json::json!({"error": "Failed to create scan job"}))
+                .json(serde_json::json!({"error": format!("Failed to create scan job {e}")}))
         }
     }
 }
@@ -267,51 +241,28 @@ pub async fn get_history(user: AuthMiddleware, app_state: web::Data<AppState>) -
     );
 
     let rows = sqlx::query_as::<_, ScanJob>(
-        r#"SELECT job_id, user_id, target_url, status, created_at FROM scan_jobs WHERE user_id = $1 ORDER BY created_at DESC LIMIT 50"#,
+        r#"SELECT job_id, user_id, target, status, timestamp as created_at FROM scan_jobs WHERE user_id = $1 ORDER BY timestamp DESC LIMIT 50"#
     )
     .bind(user.id)
     .fetch_all(app_state.db.as_ref())
     .await;
     match rows {
         Ok(jobs) => {
-            crate::tracing::log_event(
-                app_state.db.clone(),
-                "INFO",
-                "user_scan",
-                "Scan history retrieved",
-                Some(user.id),
-                Some(json!({
-                    "user_id": user.id,
-                    "job_count": jobs.len(),
-                    "operation": "get_history"
-                })),
-            )
-            .await;
-
             tracing::info!(
                 user.id = %user.id,
                 job_count = jobs.len(),
                 "Scan history retrieved successfully"
             );
-
             HttpResponse::Ok().json(jobs)
         }
         Err(e) => {
-            crate::tracing::log_system_error(
-                app_state.db.clone(),
-                "user_scan",
-                &e,
-                Some(json!({
-                    "operation": "get_history",
-                    "user_id": user.id,
-                    "table": "scan_jobs"
-                })),
-                Some(user.id),
-            )
-            .await;
-
+            tracing::error!(
+                user.id = %user.id,
+                error = ?e,
+                "Failed to fetch scan history"
+            );
             HttpResponse::InternalServerError()
-                .json(serde_json::json!({"error": "Failed to fetch history"}))
+                .json(serde_json::json!({"error": format!("Failed to fetch history: {e}")}))
         }
     }
 }
@@ -429,84 +380,44 @@ pub async fn get_scan_results(
             .await;
             match results {
                 Ok(res) => {
-                    crate::tracing::log_event(
-                        app_state.db.clone(),
-                        "INFO",
-                        "user_scan",
-                        "Scan results retrieved",
-                        Some(user_id),
-                        Some(json!({
-                            "user_id": user_id,
-                            "job_id": job_id,
-                            "result_count": res.len(),
-                            "operation": "get_scan_results"
-                        })),
-                    )
-                    .await;
-
                     tracing::info!(
                         user.id = %user_id,
                         job.id = %job_id,
                         result_count = res.len(),
                         "Scan results retrieved successfully"
                     );
-
                     HttpResponse::Ok().json(res)
                 }
                 Err(e) => {
-                    crate::tracing::log_system_error(
-                        app_state.db.clone(),
-                        "user_scan",
-                        &e,
-                        Some(json!({
-                            "operation": "get_scan_results",
-                            "user_id": user_id,
-                            "job_id": job_id,
-                            "table": "scan_results"
-                        })),
-                        Some(user_id),
-                    )
-                    .await;
-
+                    tracing::error!(
+                        user.id = %user_id,
+                        job.id = %job_id,
+                        error = ?e,
+                        "Failed to fetch scan results"
+                    );
                     HttpResponse::InternalServerError()
-                        .json(serde_json::json!({"error": "Failed to fetch results"}))
+                        .json(serde_json::json!({"error": format!("Failed to fetch results: {e}")}))
                 }
             }
         }
         Ok(None) => {
-            crate::tracing::log_security_event(
-                app_state.db.clone(),
-                "UNAUTHORIZED_ACCESS",
-                "User attempted to access scan results for job they don't own",
-                Some(user_id),
-                None,
-                Some(json!({
-                    "user_id": user_id,
-                    "requested_job_id": job_id,
-                    "operation": "get_scan_results"
-                })),
-            )
-            .await;
-
+            tracing::warn!(
+                user.id = %user_id,
+                job.id = %job_id,
+                "Job not found or not authorized"
+            );
             HttpResponse::NotFound()
                 .json(serde_json::json!({"error": "Job not found or not authorized"}))
         }
         Err(e) => {
-            crate::tracing::log_system_error(
-                app_state.db.clone(),
-                "user_scan",
-                &e,
-                Some(json!({
-                    "operation": "get_scan_results_ownership_check",
-                    "user_id": user_id,
-                    "job_id": job_id,
-                    "table": "scan_jobs"
-                })),
-                Some(user_id),
-            )
-            .await;
-
-            HttpResponse::InternalServerError().json(serde_json::json!({"error": "DB error"}))
+            tracing::error!(
+                user.id = %user_id,
+                job.id = %job_id,
+                error = ?e,
+                "Database error while fetching scan results"
+            );
+            HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": format!("DB error: {e}")}))
         }
     }
 }
@@ -598,56 +509,30 @@ pub async fn get_scan_status(
     .await;
     match row {
         Ok(Some(r)) => {
-            crate::tracing::log_event(
-                app_state.db.clone(),
-                "DEBUG",
-                "user_scan",
-                "Scan status retrieved",
-                Some(user_id),
-                Some(json!({
-                    "user_id": user_id,
-                    "job_id": job_id,
-                    "status": r.status,
-                    "operation": "get_scan_status"
-                })),
-            )
-            .await;
-
+            tracing::info!(
+                user.id = %user_id,
+                job.id = %job_id,
+                status = ?r.status,
+                "Scan job status retrieved"
+            );
             HttpResponse::Ok().json(serde_json::json!({"status": r.status}))
         }
         Ok(None) => {
-            crate::tracing::log_security_event(
-                app_state.db.clone(),
-                "UNAUTHORIZED_ACCESS",
-                "User attempted to check status for job they don't own",
-                Some(user_id),
-                None,
-                Some(json!({
-                    "user_id": user_id,
-                    "requested_job_id": job_id,
-                    "operation": "get_scan_status"
-                })),
-            )
-            .await;
-
+            tracing::warn!(
+                user.id = %user_id,
+                job.id = %job_id,
+                "Scan job not found or not authorized"
+            );
             HttpResponse::NotFound().body("Job not found")
         }
         Err(e) => {
-            crate::tracing::log_system_error(
-                app_state.db.clone(),
-                "user_scan",
-                &e,
-                Some(json!({
-                    "operation": "get_scan_status",
-                    "user_id": user_id,
-                    "job_id": job_id,
-                    "table": "scan_jobs"
-                })),
-                Some(user_id),
-            )
-            .await;
-
-            HttpResponse::InternalServerError().finish()
+            tracing::error!(
+                user.id = %user_id,
+                job.id = %job_id,
+                error = ?e,
+                "Database error while fetching scan job status"
+            );
+            HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()}))
         }
     }
 }

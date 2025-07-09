@@ -1,6 +1,7 @@
 //! Admin scan job management endpoints.
 //!
-//! Provides handlers for listing, retrieving, updating, and deleting scan jobs and their results for admin moderation.
+//! Provides handlers for listing, retrieving, updating, and deleting scan jobs and their results
+//! for admin moderation. All endpoints use structured tracing for observability.
 
 use crate::handlers::admin::guard::admin_guard;
 use crate::{AppState, auth_middleware::AuthMiddleware};
@@ -95,12 +96,19 @@ pub struct Pagination {
 ///
 /// # Authorization
 /// Requires admin privileges verified through `admin_guard()`.
+/// Retrieves a paginated list of all scan jobs in the system for admin review.
+/// Adds tracing instrumentation and logs key events and errors with structured fields.
+#[tracing::instrument(skip(user, app_state, pagination), fields(admin_id = %user.id))]
 pub async fn get_scans(
     user: AuthMiddleware,
     app_state: web::Data<AppState>,
     web::Query(pagination): web::Query<Pagination>,
 ) -> impl Responder {
     if let Err(resp) = admin_guard(&user) {
+        tracing::warn!(
+            admin_id = %user.id,
+            "Admin scan list access denied (not an admin)"
+        );
         return resp;
     }
     let rows = sqlx::query!(
@@ -127,10 +135,27 @@ pub async fn get_scans(
                     result_count: s.result_count.unwrap_or(0),
                 })
                 .collect();
+
+            tracing::info!(
+                admin_id = %user.id,
+                scan_count = mapped.len(),
+                limit = pagination.limit,
+                offset = pagination.offset,
+                "Admin retrieved scan job list"
+            );
+
             HttpResponse::Ok().json(mapped)
         }
-        Err(_) => HttpResponse::InternalServerError()
-            .json(serde_json::json!({"error": "Failed to fetch scans"})),
+        Err(e) => {
+            tracing::error!(
+                admin_id = %user.id,
+                error = ?e,
+                "Failed to fetch scan jobs for admin"
+            );
+
+            HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": "Failed to fetch scans"}))
+        }
     }
 }
 
@@ -236,12 +261,20 @@ pub struct AdminScanResult {
 ///
 /// # Authorization
 /// Requires admin privileges verified through `admin_guard()`.
+/// Retrieves comprehensive details and all results for a specific scan job.
+/// Adds tracing instrumentation and logs key events and errors with structured fields.
+#[tracing::instrument(skip(user, app_state), fields(admin_id = %user.id, job_id = %path))]
 pub async fn get_scan_details(
     user: AuthMiddleware,
     path: web::Path<Uuid>,
     app_state: web::Data<AppState>,
 ) -> impl Responder {
     if let Err(resp) = admin_guard(&user) {
+        tracing::warn!(
+            admin_id = %user.id,
+            job_id = %path,
+            "Admin scan details access denied (not an admin)"
+        );
         return resp;
     }
     let job_id = path.into_inner();
@@ -281,17 +314,46 @@ pub async fn get_scan_details(
                             detected_at: r.detected_at.unwrap_or_else(chrono::Utc::now),
                         })
                         .collect();
+                    tracing::info!(
+                        admin_id = %user.id,
+                        job_id = %job_id,
+                        result_count = mapped.len(),
+                        "Admin retrieved scan job details and results"
+                    );
+
                     HttpResponse::Ok()
                         .json(serde_json::json!({"job": job_detail, "results": mapped}))
                 }
-                Err(_) => HttpResponse::InternalServerError()
-                    .json(serde_json::json!({"error": "Failed to fetch results"})),
+                Err(e) => {
+                    tracing::error!(
+                        admin_id = %user.id,
+                        job_id = %job_id,
+                        error = ?e,
+                        "Failed to fetch scan results for admin"
+                    );
+
+                    HttpResponse::InternalServerError()
+                        .json(serde_json::json!({"error": "Failed to fetch results"}))
+                }
             }
         }
         Ok(None) => {
+            tracing::warn!(
+                admin_id = %user.id,
+                job_id = %job_id,
+                "Scan job not found for admin details request"
+            );
+
             HttpResponse::NotFound().json(serde_json::json!({"error": "Scan job not found"}))
         }
-        Err(_) => {
+        Err(e) => {
+            tracing::error!(
+                admin_id = %user.id,
+                job_id = %job_id,
+                error = ?e,
+                "Database error when fetching scan job details"
+            );
+
             HttpResponse::InternalServerError().json(serde_json::json!({"error": "DB error"}))
         }
     }
@@ -374,6 +436,9 @@ pub struct AdminScanStatus {
 ///
 /// # Authorization
 /// Requires admin privileges verified through `admin_guard()`.
+/// Updates the processing status of a specific scan job for admin moderation.
+/// Adds tracing instrumentation and logs key events and errors with structured fields.
+#[tracing::instrument(skip(user, app_state, body), fields(admin_id = %user.id, job_id = %path, new_status = %body.status))]
 pub async fn patch_scan_status(
     user: AuthMiddleware,
     path: web::Path<Uuid>,
@@ -381,10 +446,21 @@ pub async fn patch_scan_status(
     web::Json(body): web::Json<StatusPatch>,
 ) -> impl Responder {
     if let Err(resp) = admin_guard(&user) {
+        tracing::warn!(
+            admin_id = %user.id,
+            job_id = %path,
+            "Admin scan status update denied (not an admin)"
+        );
         return resp;
     }
     let allowed = ["queued", "running", "completed", "failed", "flagged"];
     if !allowed.contains(&body.status.as_str()) {
+        tracing::warn!(
+            admin_id = %user.id,
+            job_id = %path,
+            status = %body.status,
+            "Invalid scan status value provided"
+        );
         return HttpResponse::BadRequest()
             .json(serde_json::json!({"error": "Invalid status value"}));
     }
@@ -397,15 +473,41 @@ pub async fn patch_scan_status(
     .fetch_optional(app_state.db.as_ref())
     .await;
     match res {
-        Ok(Some(row)) => HttpResponse::Ok().json(AdminScanStatus {
-            job_id: row.job_id,
-            status: row.status.unwrap_or_default(),
-        }),
+        Ok(Some(row)) => {
+            tracing::info!(
+                admin_id = %user.id,
+                job_id = %job_id,
+                old_status = ?row.status,
+                new_status = %body.status,
+                "Admin updated scan job status"
+            );
+
+            HttpResponse::Ok().json(AdminScanStatus {
+                job_id: row.job_id,
+                status: row.status.unwrap_or_default(),
+            })
+        }
         Ok(None) => {
+            tracing::warn!(
+                admin_id = %user.id,
+                job_id = %job_id,
+                "Scan job not found for status update"
+            );
+
             HttpResponse::NotFound().json(serde_json::json!({"error": "Scan job not found"}))
         }
-        Err(_) => HttpResponse::InternalServerError()
-            .json(serde_json::json!({"error": "Failed to update status"})),
+        Err(e) => {
+            tracing::error!(
+                admin_id = %user.id,
+                job_id = %job_id,
+                status = %body.status,
+                error = ?e,
+                "Failed to update scan job status"
+            );
+
+            HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": "Failed to update status"}))
+        }
     }
 }
 
@@ -474,12 +576,20 @@ pub struct AdminScanDelete {
 ///
 /// # Authorization
 /// Requires admin privileges verified through `admin_guard()`.
+/// Permanently deletes a scan job and all associated detection results.
+/// Adds tracing instrumentation and logs key events and errors with structured fields.
+#[tracing::instrument(skip(user, app_state), fields(admin_id = %user.id, job_id = %path))]
 pub async fn delete_scan(
     user: AuthMiddleware,
     path: web::Path<Uuid>,
     app_state: web::Data<AppState>,
 ) -> impl Responder {
     if let Err(resp) = admin_guard(&user) {
+        tracing::warn!(
+            admin_id = %user.id,
+            job_id = %path,
+            "Admin scan deletion denied (not an admin)"
+        );
         return resp;
     }
     let job_id = path.into_inner();
@@ -493,11 +603,34 @@ pub async fn delete_scan(
     .fetch_optional(app_state.db.as_ref())
     .await;
     match res {
-        Ok(Some(row)) => HttpResponse::Ok().json(AdminScanDelete { job_id: row.job_id }),
+        Ok(Some(row)) => {
+            tracing::info!(
+                admin_id = %user.id,
+                job_id = %job_id,
+                "Admin successfully deleted scan job and results"
+            );
+
+            HttpResponse::Ok().json(AdminScanDelete { job_id: row.job_id })
+        }
         Ok(None) => {
+            tracing::warn!(
+                admin_id = %user.id,
+                job_id = %job_id,
+                "Scan job not found for deletion"
+            );
+
             HttpResponse::NotFound().json(serde_json::json!({"error": "Scan job not found"}))
         }
-        Err(_) => HttpResponse::InternalServerError()
-            .json(serde_json::json!({"error": "Failed to delete scan job"})),
+        Err(e) => {
+            tracing::error!(
+                admin_id = %user.id,
+                job_id = %job_id,
+                error = ?e,
+                "Failed to delete scan job"
+            );
+
+            HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": "Failed to delete scan job"}))
+        }
     }
 }

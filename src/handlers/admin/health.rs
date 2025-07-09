@@ -115,15 +115,23 @@ struct AdminHealth {
 ///
 /// # Authorization
 /// Requires admin privileges verified through `admin_guard()`.
+/// Returns comprehensive system health metrics and operational statistics for admin monitoring.
+/// Adds tracing instrumentation and logs key events and errors with structured fields.
+#[tracing::instrument(skip(user, app_state), fields(admin_id = %user.id))]
 pub async fn get_admin_health(
     user: AuthMiddleware,
     app_state: web::Data<AppState>,
 ) -> impl Responder {
     if let Err(resp) = admin_guard(&user) {
+        tracing::warn!(
+            admin_id = %user.id,
+            "Admin health check failed admin_guard"
+        );
         return resp;
     }
     let uptime = humantime::format_duration(START_TIME.elapsed()).to_string();
     let db = app_state.db.as_ref();
+
     let active_jobs =
         sqlx::query_scalar!("SELECT COUNT(*) FROM scan_jobs WHERE status = 'running'")
             .fetch_one(db)
@@ -144,6 +152,17 @@ pub async fn get_admin_health(
     .await
     .unwrap_or(None)
     .unwrap_or(0);
+
+    tracing::info!(
+        admin_id = %user.id,
+        uptime = %uptime,
+        active_jobs = %active_jobs,
+        queued_jobs = %queued_jobs,
+        completed_today = %completed_today,
+        failed_today = %failed_today,
+        "Admin health metrics retrieved"
+    );
+
     HttpResponse::Ok().json(AdminHealth {
         status: "ok",
         uptime,

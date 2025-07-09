@@ -11,8 +11,8 @@
 use crate::detection::analyzer::detect_deepfake;
 use crate::scraper::client::fetch_scraped_media;
 use chrono::Utc;
-use log::{error, info};
 use sqlx::PgPool;
+use tracing::{error, info, instrument};
 use uuid::Uuid;
 
 /// Runs the scan pipeline for a given scan job.
@@ -34,32 +34,57 @@ use uuid::Uuid;
 ///
 /// # Async
 /// This function is async and should be spawned as a background task.
+/// Processes a scan job: fetches media, runs detection, saves results, and updates job status.
+///
+/// This function is instrumented for tracing and logs key events and errors with structured fields.
+#[instrument(skip(pool), fields(job_id = %job_id, user_id = %user_id, target = %target))]
 pub async fn run_scan_pipeline(
     pool: PgPool,
     job_id: Uuid,
     target: String,
     user_id: Uuid,
 ) -> Result<(), sqlx::Error> {
-    info!("Starting scan pipeline for job_id: {job_id} target: {target}");
+    info!(
+        job.id = %job_id,
+        user.id = %user_id,
+        target = %target,
+        "Starting scan pipeline"
+    );
+
+    // Fetch media URLs for the scan job
     let media_urls = match fetch_scraped_media(&target, user_id).await {
         Ok(urls) => urls,
         Err(e) => {
-            error!("Scraper error for job {job_id}: {e:?}");
-            sqlx::query!(
+            error!(
+                job.id = %job_id,
+                user.id = %user_id,
+                target = %target,
+                error = ?e,
+                "Failed to fetch media URLs from scraper"
+            );
+            // Mark job as failed in the database
+            let _ = sqlx::query!(
                 "UPDATE scan_jobs SET status = 'failed' WHERE job_id = $1",
                 job_id
             )
             .execute(&pool)
-            .await
-            .ok();
+            .await;
             return Ok(());
         }
     };
+
+    // Run deepfake detection on each media item and save results
     for media_url in media_urls {
         let (confidence, label) = match detect_deepfake(&media_url).await {
             Ok(res) => res,
             Err(e) => {
-                error!("AI model error for job {job_id} url {media_url}: {e:?}",);
+                error!(
+                    job.id = %job_id,
+                    user.id = %user_id,
+                    media_url = %media_url,
+                    error = ?e,
+                    "Deepfake detection failed for media"
+                );
                 (0.0, "UNKNOWN".to_string())
             }
         };
@@ -74,9 +99,17 @@ pub async fn run_scan_pipeline(
             label,
             detected_at
         ).execute(&pool).await {
-            error!("Failed to insert scan result: {e:?}");
+            error!(
+                job.id = %job_id,
+                user.id = %user_id,
+                media_url = %media_url,
+                error = ?e,
+                "Failed to insert scan result"
+            );
         }
     }
+
+    // Update job status to completed
     if let Err(e) = sqlx::query!(
         "UPDATE scan_jobs SET status = 'completed' WHERE job_id = $1",
         job_id
@@ -84,8 +117,18 @@ pub async fn run_scan_pipeline(
     .execute(&pool)
     .await
     {
-        error!("Failed to update scan job status: {e:?}");
+        error!(
+            job.id = %job_id,
+            user.id = %user_id,
+            error = ?e,
+            "Failed to update scan job status to completed"
+        );
     }
-    info!("Completed scan pipeline for job_id: {job_id}");
+
+    info!(
+        job.id = %job_id,
+        user.id = %user_id,
+        "Completed scan pipeline"
+    );
     Ok(())
 }

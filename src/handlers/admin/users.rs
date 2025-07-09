@@ -138,12 +138,16 @@ pub struct AdminUserProfile {
 ///
 /// # Authorization
 /// Requires admin privileges verified through `admin_guard()`.
+/// Retrieves a comprehensive list of all user profiles and account information for admin review.
+/// Adds tracing instrumentation and logs key events and errors with structured fields.
+#[tracing::instrument(skip(user, app_state), fields(admin_id = %user.id))]
 pub async fn get_users(user: AuthMiddleware, app_state: web::Data<AppState>) -> impl Responder {
     if let Err(resp) = admin_guard(&user) {
         return resp;
     }
     let rows = sqlx::query!(
-        r#"SELECT user_profiles.user_id, user_profiles.name, auth.users.email, user_profiles.age, user_profiles.gender
+        r#"
+        SELECT user_profiles.user_id, user_profiles.name, auth.users.email, user_profiles.age, user_profiles.gender
            FROM user_profiles JOIN auth.users ON user_profiles.user_id = auth.users.id"#
     )
     .fetch_all(app_state.db.as_ref())
@@ -160,9 +164,21 @@ pub async fn get_users(user: AuthMiddleware, app_state: web::Data<AppState>) -> 
                     gender: u.gender,
                 })
                 .collect();
+            tracing::info!(
+                admin_id = %user.id,
+                user_count = mapped.len(),
+                "Admin fetched user list successfully"
+            );
             HttpResponse::Ok().json(mapped)
         }
-        Err(_) => HttpResponse::InternalServerError()
-            .json(serde_json::json!({"error": "Failed to fetch users"})),
+        Err(e) => {
+            tracing::error!(
+                admin_id = %user.id,
+                error = ?e,
+                "Failed to fetch users for admin"
+            );
+            HttpResponse::InternalServerError()
+                .json(serde_json::json!({ "error": "Failed to fetch users" }))
+        }
     }
 }

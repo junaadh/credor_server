@@ -6,7 +6,7 @@ use crate::services::SupabaseService;
 use crate::{AppState, data::Role};
 use actix_web::{HttpResponse, Responder, web};
 use serde::Deserialize;
-use tracing::{Span, instrument};
+use tracing::{Span, error, info, instrument};
 use validator::Validate;
 
 #[derive(Debug, Deserialize, Validate)]
@@ -28,6 +28,8 @@ pub struct AdminLoginRequest {
 
 /// Registers a new administrator account with elevated privileges.
 ///
+/// Adds tracing instrumentation and logs key events and errors with structured fields.
+#[instrument(skip(data, form), fields(email = %form.email, name = %form.name))]
 /// This endpoint creates a new admin account through Supabase Auth with the Admin role.
 /// Unlike regular user registration, this endpoint is typically restricted to existing
 /// administrators or used during initial system setup.
@@ -92,18 +94,46 @@ pub async fn register(
     form: web::Json<AdminRegisterRequest>,
 ) -> impl Responder {
     if let Err(e) = form.validate() {
+        error!(
+            email = %form.email,
+            name = %form.name,
+            error = ?e,
+            "Admin registration validation failed"
+        );
         return HttpResponse::BadRequest().json(serde_json::json!({"error": e.to_string()}));
     }
+    info!(
+        email = %form.email,
+        name = %form.name,
+        "Attempting admin registration"
+    );
     match SupabaseService::register(&data, &form.name, &form.email, &form.password, Role::Admin)
         .await
     {
-        Ok(res) => HttpResponse::Ok().json(res),
-        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!(e)), // todo!()
+        Ok(res) => {
+            info!(
+                email = %form.email,
+                name = %form.name,
+                "Admin registration successful"
+            );
+            HttpResponse::Ok().json(res)
+        }
+        Err(e) => {
+            error!(
+                email = %form.email,
+                name = %form.name,
+                error = ?e,
+                "Admin registration failed"
+            );
+            HttpResponse::InternalServerError().json(serde_json::json!(e))
+        }
     }
 }
 
 /// Authenticates an administrator and returns elevated access tokens.
 ///
+/// Adds tracing instrumentation and logs key events and errors with structured fields.
+#[instrument(skip(data, form), fields(email = %form.email))]
 /// This endpoint validates admin credentials against Supabase Auth and returns
 /// JWT tokens with admin privileges. The returned tokens provide access to
 /// administrative endpoints and sensitive system operations.
@@ -179,20 +209,40 @@ pub async fn register(
 ///   localStorage.setItem('adminToken', auth.access_token);
 /// });
 /// ```
-#[instrument(skip(data), fields(user_id = tracing::field::Empty, user_role = "admin"))]
+// #[instrument(skip(data), fields(user_id = tracing::field::Empty, user_role = "admin"))]
 pub async fn login(
     data: web::Data<AppState>,
     form: web::Json<AdminLoginRequest>,
 ) -> impl Responder {
     if let Err(e) = form.validate() {
+        error!(
+            email = %form.email,
+            error = ?e,
+            "Admin login validation failed"
+        );
         return HttpResponse::BadRequest().json(serde_json::json!({"error": e.to_string()}));
     }
+    info!(
+        email = %form.email,
+        "Attempting admin login"
+    );
     match SupabaseService::login(&data, &form.email, &form.password).await {
         Ok(res) => {
             Span::current().record("user_id", res.user.id.to_string());
-            // Span::current().record("user_role", res.user.user_metadata.role.into());
+            info!(
+                email = %form.email,
+                user_id = %res.user.id,
+                "Admin login successful"
+            );
             HttpResponse::Ok().json(res)
         }
-        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!(e)),
+        Err(e) => {
+            error!(
+                email = %form.email,
+                error = ?e,
+                "Admin login failed"
+            );
+            HttpResponse::InternalServerError().json(serde_json::json!(e))
+        }
     }
 }

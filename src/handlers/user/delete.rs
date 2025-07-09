@@ -4,7 +4,7 @@
 
 use crate::{AppState, SupabaseService, auth_middleware::AuthMiddleware};
 use actix_web::{HttpResponse, Responder, web};
-use log::info;
+use tracing::{info, instrument};
 
 /// Permanently deletes the authenticated user's account and all associated data.
 ///
@@ -74,30 +74,50 @@ use log::info;
 ///   }
 /// });
 /// ```
+/// Deletes the authenticated user's account and all associated data.
+/// This operation is instrumented for tracing and logs key events.
+#[instrument(skip(data, user), fields(user_id = %user.id))]
 pub async fn delete_account(data: web::Data<AppState>, user: AuthMiddleware) -> impl Responder {
-    // Delete scan_results
     let user_id = user.id;
 
+    // Delete user from Supabase Auth
     if let Err(e) = SupabaseService::delete(&data, &user, user_id).await {
+        tracing::error!(
+            user.id = %user_id,
+            error = ?e,
+            "Failed to delete user from Supabase Auth"
+        );
         return HttpResponse::InternalServerError().json(serde_json::json!(e));
     }
 
     let db = data.db.as_ref();
 
-    let _ = sqlx::query!("DELETE FROM scan_results WHERE job_id IN (SELECT job_id FROM scan_jobs WHERE user_id = $1)", user_id)
-        .execute(db).await;
-    // Delete scan_jobs
+    // Delete all scan results for the user's jobs
+    let _ = sqlx::query!(
+        "DELETE FROM scan_results WHERE job_id IN (SELECT job_id FROM scan_jobs WHERE user_id = $1)",
+        user_id
+    )
+    .execute(db)
+    .await;
+
+    // Delete all scan jobs for the user
     let _ = sqlx::query!("DELETE FROM scan_jobs WHERE user_id = $1", user_id)
         .execute(db)
         .await;
-    // Delete user_settings
+
+    // Delete user settings
     let _ = sqlx::query!("DELETE FROM user_settings WHERE user_id = $1", user_id)
         .execute(db)
         .await;
-    // Delete user_profiles
+
+    // Delete user profile
     let _ = sqlx::query!("DELETE FROM user_profiles WHERE user_id = $1", user_id)
         .execute(db)
         .await;
-    info!("Deleted account and all data for user_id: {user_id}");
+
+    info!(
+        user.id = %user_id,
+        "Deleted account and all associated data"
+    );
     HttpResponse::NoContent().finish()
 }

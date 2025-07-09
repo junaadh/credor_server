@@ -94,11 +94,18 @@ pub struct AdminAnalytics {
 /// - Read-only operations with minimal performance impact
 /// - Uses COUNT() and AVG() aggregations
 /// - Filters by date for active user calculation
+/// Returns real-time analytics metrics for the admin dashboard.
+/// Adds tracing instrumentation and logs key events and errors with structured fields.
+#[tracing::instrument(skip(user, app_state), fields(admin_id = %user.id))]
 pub async fn get_admin_analytics(
     user: AuthMiddleware,
     app_state: web::Data<AppState>,
 ) -> impl Responder {
     if let Err(resp) = admin_guard(&user) {
+        tracing::warn!(
+            admin_id = %user.id,
+            "Admin analytics access denied (not an admin)"
+        );
         return resp;
     }
 
@@ -134,6 +141,14 @@ pub async fn get_admin_analytics(
     .await
     .unwrap_or(Some(0.0))
     .unwrap_or(0.0) as f32;
+
+    tracing::info!(
+        admin_id = %user.id,
+        active_users_today,
+        total_jobs,
+        avg_confidence,
+        "Admin analytics metrics retrieved successfully"
+    );
 
     HttpResponse::Ok().json(AdminAnalytics {
         active_users_today,

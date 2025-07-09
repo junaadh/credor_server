@@ -6,7 +6,6 @@ use crate::{AppState, SupabaseService, data::Role};
 use actix_web::web;
 use actix_web::{HttpRequest, HttpResponse, Responder};
 use serde::Deserialize;
-use serde_json::json;
 use validator::Validate;
 
 #[derive(Debug, Deserialize, Validate)]
@@ -88,19 +87,7 @@ pub async fn register(
 ) -> impl Responder {
     let db = data.db.clone();
     if let Err(e) = form.validate() {
-        crate::tracing::log_event(
-            db.clone(),
-            "WARN",
-            "user_auth",
-            "User registration validation failed",
-            None,
-            Some(json!({
-                "email": form.email,
-                "validation_error": e.to_string(),
-                "ip_address": crate::tracing::utils::extract_request_context(&req)
-            })),
-        )
-        .await;
+        // Logging is now automatic via tracing layer
 
         return HttpResponse::BadRequest().json(serde_json::json!({"error": e.to_string()}));
     }
@@ -116,19 +103,7 @@ pub async fn register(
         Ok(res) => {
             let user_id = res.user.id;
 
-            crate::tracing::log_user_action(
-                db.clone(),
-                "user_registration_success",
-                user_id,
-                Some(json!({
-                    "name": form.name,
-                    "email": form.email,
-                    "age": form.age,
-                    "gender": form.gender
-                })),
-                Some(crate::tracing::utils::extract_request_context(&req)),
-            )
-            .await;
+            // Logging is now automatic via tracing layer
 
             // Insert user profile if registration returns a session (user created)
             if let Err(e) = sqlx::query(
@@ -140,17 +115,7 @@ pub async fn register(
             .bind(&form.gender)
             .execute(db.as_ref())
             .await {
-                crate::tracing::log_system_error(
-                    db,
-                    "user_auth",
-                    &e,
-                    Some(json!({
-                        "operation": "profile_insert",
-                        "user_id": user_id,
-                        "table": "user_profiles"
-                    })),
-                    Some(user_id)
-                ).await;
+                // Logging is now automatic via tracing layer
 
                 return HttpResponse::InternalServerError()
                     .json(serde_json::json!({"error": format!("profile insert failed: {}", e)}));
@@ -167,18 +132,7 @@ pub async fn register(
             .execute(db.as_ref())
             .await
             {
-                crate::tracing::log_system_error(
-                    db,
-                    "user_auth",
-                    &e,
-                    Some(json!({
-                        "operation": "insert_user_settings",
-                        "user_id": user_id,
-                        "error": e.to_string()
-                    })),
-                    Some(user_id),
-                )
-                .await;
+                // Logging is now automatic via tracing layer
 
                 return HttpResponse::InternalServerError()
                     .json(serde_json::json!({"error": format!("settings insert failed: {e}")}));
@@ -193,18 +147,7 @@ pub async fn register(
             HttpResponse::Ok().json(res)
         }
         Err(e) => {
-            crate::tracing::log_system_error(
-                db,
-                "user_auth",
-                &e,
-                Some(json!({
-                    "operation": "user_registration",
-                    "email": form.email,
-                    "error": format!("{:?}", e)
-                })),
-                None,
-            )
-            .await;
+            // Logging is now automatic via tracing layer
 
             HttpResponse::InternalServerError()
                 .json(serde_json::json!({"error": format!("registration failed: {:?}", e)}))
@@ -265,23 +208,8 @@ pub async fn login(
     form: web::Json<LoginRequest>,
     req: HttpRequest,
 ) -> impl Responder {
-    let db = data.db.clone();
     if let Err(e) = form.validate() {
-        crate::tracing::log_event(
-            db.clone(),
-            "WARN",
-            "user_auth",
-            "User login validation failed",
-            None,
-            Some(json!({
-                "email": form.email,
-                "validation_error": e.to_string(),
-                "request_context": crate::tracing::utils::extract_request_context(&req)
-            })),
-        )
-        .await;
-
-        return HttpResponse::BadRequest().json(serde_json::json!({"error": e.to_string()}));
+        return HttpResponse::BadRequest().json(serde_json::json!(e));
     }
 
     tracing::info!(
@@ -293,17 +221,7 @@ pub async fn login(
         Ok(res) => {
             let user_id = res.user.id;
 
-            crate::tracing::log_user_action(
-                db.clone(),
-                "user_login_success",
-                user_id,
-                Some(json!({
-                    "email": form.email,
-                    "login_timestamp": chrono::Utc::now()
-                })),
-                Some(crate::tracing::utils::extract_request_context(&req)),
-            )
-            .await;
+            // Logging is now automatic via tracing layer
 
             tracing::info!(
                 user.id = %user_id,
@@ -314,19 +232,7 @@ pub async fn login(
             HttpResponse::Ok().json(res)
         }
         Err(e) => {
-            crate::tracing::log_security_event(
-                db.clone(),
-                "LOGIN_FAILURE",
-                "Failed login attempt",
-                None,
-                req.connection_info().peer_addr(),
-                Some(json!({
-                    "email": form.email,
-                    "error": format!("{e:?}"),
-                    "request_context": crate::tracing::utils::extract_request_context(&req)
-                })),
-            )
-            .await;
+            // Logging is now automatic via tracing layer
 
             tracing::warn!(
                 user.email = %form.email,

@@ -9,13 +9,12 @@ use crate::handlers::admin::guard::admin_guard;
 use actix_web::{HttpResponse, Responder, web};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use tracing::{error, instrument};
 use uuid::Uuid;
 
 /// Individual log entry with metadata and context.
 #[derive(Debug, Serialize)]
 pub struct LogEntry {
-    /// Unique identifier for this log entry
-    pub id: Uuid,
     /// Timestamp when the log was created
     pub timestamp: DateTime<Utc>,
     /// Log level (ERROR, WARN, INFO, DEBUG)
@@ -127,6 +126,9 @@ pub struct LogQuery {
 ///
 /// # Authorization
 /// Requires admin privileges verified through `admin_guard()`.
+/// Retrieves system logs with filtering and pagination support for admin monitoring.
+/// Logs errors and key events using structured tracing.
+#[instrument(skip(user, app_state, query), fields(admin_id = %user.id))]
 pub async fn get_admin_logs(
     user: AuthMiddleware,
     app_state: web::Data<AppState>,
@@ -153,7 +155,11 @@ pub async fn get_admin_logs(
     let total_count = match get_logs_count(&app_state.db, &query).await {
         Ok(count) => count,
         Err(e) => {
-            log::error!("Failed to get logs count: {}", e);
+            error!(
+                admin_id = %user.id,
+                error = ?e,
+                "Failed to get logs count"
+            );
             return HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to retrieve logs count"
             }));
@@ -164,12 +170,25 @@ pub async fn get_admin_logs(
     let logs = match get_filtered_logs(&app_state.db, &query, limit, offset).await {
         Ok(logs) => logs,
         Err(e) => {
-            log::error!("Failed to get filtered logs: {}", e);
+            error!(
+                admin_id = %user.id,
+                error = ?e,
+                "Failed to get filtered logs"
+            );
             return HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to retrieve logs"
             }));
         }
     };
+
+    tracing::info!(
+        admin_id = %user.id,
+        log_count = logs.len(),
+        total_count,
+        limit,
+        offset,
+        "Admin logs retrieved successfully"
+    );
 
     HttpResponse::Ok().json(AdminLogsResponse {
         logs,
@@ -243,7 +262,7 @@ async fn get_filtered_logs(
     let logs: Vec<LogEntry> = rows
         .into_iter()
         .map(|row| LogEntry {
-            id: row.id,
+            // id: row.id,
             timestamp: row.timestamp,
             level: row.level,
             source: row.source,
@@ -295,11 +314,12 @@ pub async fn create_system_log_entry(
 macro_rules! log_to_system_db {
     ($db:expr, $level:expr, $source:expr, $message:expr, $user_id:expr, $context:expr) => {
         tokio::spawn(async move {
-            if let Err(e) = crate::handlers::admin::logs::create_system_log_entry(
+            if let Err(e) = $crate::handlers::admin::logs::create_system_log_entry(
                 $db, $level, $source, $message, $user_id, $context,
             )
             .await
             {
+                // This is a background task error, log to stderr for diagnostics
                 eprintln!("Failed to write to system logs: {}", e);
             }
         });

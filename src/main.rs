@@ -5,10 +5,8 @@
 //! Uses dotenv for config and launches the async runtime with comprehensive tracing.
 
 use actix_web::{App, HttpServer, middleware::Logger, web};
-use credor::{AppState, get_subscriber, handlers, init_subscriber, tracing as app_tracing};
+use credor::{AppState, handlers, logging};
 use dotenv::dotenv;
-use tracing_actix_web::TracingLogger;
-use tracing_subscriber::{EnvFilter, Registry, fmt, layer::SubscriberExt};
 
 /// Main entry point. Configures and runs the Actix Web server.
 ///
@@ -24,34 +22,15 @@ async fn main() -> std::io::Result<()> {
     // Initialize application state
     let app_state = AppState::new().await.expect("failed to init app_state");
 
-    // Setup stdout logging
-    // let stdout_layer = fmt::layer().pretty(); // or .json() if you prefer
-
-    // // Setup DB layer
-    // let db_layer = DatabaseLayer::new(app_state.db.clone());
-
-    // // Env filter
-    // let env_filter = EnvFilter::try_from_default_env()
-    //     .unwrap_or_else(|_| EnvFilter::new("warn,actix_web=warn,sqlx=warn"));
-
-    // // Compose the subscriber
-    // let subscriber = Registry::default()
-    //     .with(env_filter)
-    //     .with(stdout_layer)
-    //     .with(db_layer); // <- Add your DB layer here
-
-    // tracing::subscriber::set_global_default(subscriber).expect("failed to set tracing subscriber");
-
-    let subscriber = get_subscriber("credor".to_string(), "info".to_string(), std::io::stdout);
-    init_subscriber(subscriber);
+    // Initialize unified structured logging (stdout + Postgres)
+    logging::setup_tracing(app_state.db.clone());
 
     let server = HttpServer::new(move || {
         App::new()
             .app_data(web::Data::new(app_state.clone()))
             // Add comprehensive logging middleware
-            .wrap(TracingLogger::default())
+            // TracingLogger is already included in setup_tracing, so only keep Logger if desired
             .wrap(Logger::default())
-            .wrap(app_tracing::RequestLoggingMiddleware::new())
             .service(
                 web::scope("/api")
                     .route("/health", web::get().to(handlers::health::health_check))
@@ -103,29 +82,29 @@ async fn main() -> std::io::Result<()> {
                                 "/logs",
                                 actix_web::web::get().to(handlers::admin::logs::get_admin_logs),
                             ),
-                    ),
-            )
-            .service(
-                web::scope("/api/user")
-                    // Authentication routes
-                    .route("/register", web::post().to(handlers::user::register))
-                    .route("/login", web::post().to(handlers::user::login))
-                    .route("/delete", web::delete().to(handlers::user::delete_account))
-                    // Profile management
-                    .route("/profile", web::put().to(handlers::user::update_profile))
-                    // Settings management
-                    .route("/settings", web::get().to(handlers::user::get_settings))
-                    .route("/settings", web::patch().to(handlers::user::patch_settings))
-                    // Scan operations
-                    .route("/scan", web::post().to(handlers::user::post_scan))
-                    .route("/scan/history", web::get().to(handlers::user::get_history))
-                    .route(
-                        "/scan/{job_id}/results",
-                        web::get().to(handlers::user::get_scan_results),
                     )
-                    .route(
-                        "/scan/{job_id}/status",
-                        web::get().to(handlers::user::get_scan_status),
+                    .service(
+                        web::scope("/user")
+                            // Authentication routes
+                            .route("/register", web::post().to(handlers::user::register))
+                            .route("/login", web::post().to(handlers::user::login))
+                            .route("/delete", web::delete().to(handlers::user::delete_account))
+                            // Profile management
+                            .route("/profile", web::put().to(handlers::user::update_profile))
+                            // Settings management
+                            .route("/settings", web::get().to(handlers::user::get_settings))
+                            .route("/settings", web::patch().to(handlers::user::patch_settings))
+                            // Scan operations
+                            .route("/scan", web::post().to(handlers::user::post_scan))
+                            .route("/scan/history", web::get().to(handlers::user::get_history))
+                            .route(
+                                "/scan/{job_id}/results",
+                                web::get().to(handlers::user::get_scan_results),
+                            )
+                            .route(
+                                "/scan/{job_id}/status",
+                                web::get().to(handlers::user::get_scan_status),
+                            ),
                     ),
             )
     })

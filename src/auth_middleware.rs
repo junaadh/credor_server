@@ -92,9 +92,21 @@ impl FromRequest for AuthMiddleware {
                     .get("X-Test-Email")
                     .and_then(|v| v.to_str().ok()),
             ) {
+                tracing::debug!(
+                    test_user_id = %id,
+                    test_email = %email,
+                    test_role = %role,
+                    "Using test authentication headers"
+                );
+
                 let user_id = match Uuid::from_str(id) {
                     Ok(u) => u,
                     Err(e) => {
+                        tracing::error!(
+                            test_user_id = %id,
+                            error = ?e,
+                            "Invalid UUID in test headers"
+                        );
                         return Box::pin(async move {
                             Err(actix_web::error::ErrorBadRequest(format!(
                                 "Invalid UUID: {e}"
@@ -111,6 +123,12 @@ impl FromRequest for AuthMiddleware {
                     age: Some(24),
                     gender: Some("male".to_string()),
                 };
+                tracing::info!(
+                    user_id = %user_id,
+                    email = %email,
+                    role = ?user.role,
+                    "Test user authenticated"
+                );
                 return Box::pin(async move { Ok(AuthMiddleware(user)) });
             }
         }
@@ -123,42 +141,76 @@ impl FromRequest for AuthMiddleware {
             let app_data =
                 app_data.ok_or_else(|| actix_web::error::ErrorUnauthorized("AppState missing"))?;
 
+            tracing::debug!("Extracting auth token from request");
+
             // token extraction
             let token = auth_header
-                .ok_or_else(|| actix_web::error::ErrorUnauthorized("no authorization header"))?
+                .ok_or_else(|| {
+                    tracing::warn!("No Authorization header present in request");
+                    actix_web::error::ErrorUnauthorized("no authorization header")
+                })?
                 .to_str()
                 .map_err(|e| {
+                    tracing::warn!(error = ?e, "Invalid Authorization header format");
                     actix_web::error::ErrorUnauthorized(format!("invalid header format {e}"))
                 })?
                 .strip_prefix("Bearer ")
-                .ok_or_else(|| actix_web::error::ErrorUnauthorized("invalid auth header"))?
+                .ok_or_else(|| {
+                    tracing::warn!("Authorization header missing Bearer prefix");
+                    actix_web::error::ErrorUnauthorized("invalid auth header")
+                })?
                 .to_string();
 
+            tracing::debug!("Successfully extracted JWT token");
+
             // supabase auth
+            tracing::debug!("Validating token with Supabase");
+
+            let supabase_url = format!(
+                "{}/auth/v1/user",
+                app_data.supabase_url.trim_end_matches('/')
+            );
+
+            tracing::debug!(url = %supabase_url, "Calling Supabase Auth API");
+
             let res = Client::new()
-                .get(format!(
-                    "{}/auth/v1/user",
-                    app_data.supabase_url.trim_end_matches('/')
-                ))
+                .get(supabase_url)
                 .header("Authorization", format!("Bearer {token}"))
                 .header("apikey", &app_data.supabase_anon_key)
                 .send()
                 .await
                 .map_err(|e| {
+                    tracing::error!(error = ?e, "Failed to connect to Supabase Auth API");
                     actix_web::error::ErrorBadRequest(format!("supabase auth failed: {e}"))
                 })?;
 
             if !res.status().is_success() {
+                let status = res.status();
+                tracing::warn!(
+                    status_code = %status.as_u16(),
+                    "Supabase rejected token authentication"
+                );
                 return Err(actix_web::error::ErrorUnauthorized(
                     "Invalid Supabase token",
                 ));
             }
 
+            tracing::debug!("Supabase validated token successfully");
+
             let user: handlers::data::User = res.json().await.map_err(|e| {
+                tracing::error!(error = ?e, "Failed to parse Supabase user response");
                 actix_web::error::ErrorUnauthorized(format!("Invalid Supabase user response: {e}"))
             })?;
 
+            tracing::debug!(
+                user_id = %user.id,
+                email = %user.email,
+                "Successfully retrieved user data from Supabase"
+            );
+
             // Fetch extra profile fields from user_profiles
+            tracing::debug!(user_id = %user.id, "Fetching additional profile data from database");
+
             let db = app_data.db.as_ref();
             let user_uuid = user.id;
             let row = sqlx::query!(
@@ -167,7 +219,15 @@ impl FromRequest for AuthMiddleware {
             )
             .fetch_optional(db)
             .await
-            .map_err(|_| actix_web::error::ErrorUnauthorized("Failed to fetch user profile"))?;
+            .map_err(|e| {
+                tracing::error!(
+                    user_id = %user_uuid,
+                    error = ?e,
+                    "Failed to fetch user profile from database"
+                );
+                actix_web::error::ErrorUnauthorized("Failed to fetch user profile")
+            })?;
+
             let mut ctx = UserContext {
                 id: user.id,
                 email: user.email,
@@ -176,10 +236,27 @@ impl FromRequest for AuthMiddleware {
                 age: None,
                 gender: None,
             };
+
             if let Some(profile) = row {
+                tracing::debug!(
+                    user_id = %user_uuid,
+                    "Found user profile in database"
+                );
                 ctx.age = profile.age;
                 ctx.gender = profile.gender;
+            } else {
+                tracing::debug!(
+                    user_id = %user_uuid,
+                    "No user profile found in database"
+                );
             }
+
+            tracing::info!(
+                user_id = %ctx.id,
+                email = %ctx.email,
+                role = ?ctx.role,
+                "User authenticated successfully"
+            );
 
             Span::current().record("user_id", ctx.id.to_string());
             Ok(AuthMiddleware(ctx))
