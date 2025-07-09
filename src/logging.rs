@@ -237,7 +237,7 @@ pub fn setup_tracing(pool: Arc<PgPool>) {
         .unwrap_or_else(|_| EnvFilter::new("info,actix_web=info,actix_server=info,mio=info"));
 
     let bunyan_layer = BunyanFormattingLayer::new(
-        "my-app".into(),                                       // Name of the service
+        "credor_server".into(),                                // Name of the service
         std::io::stdout.with_max_level(tracing::Level::TRACE), // Output
     );
 
