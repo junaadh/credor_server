@@ -9,11 +9,14 @@
 //! Used by background tasks (tokio::spawn) to process scan jobs asynchronously.
 
 use crate::detection::analyzer::detect_deepfake;
-use crate::scraper::client::fetch_scraped_media;
 use chrono::Utc;
 use sqlx::PgPool;
 use tracing::{error, info, instrument};
 use uuid::Uuid;
+
+async fn fetch_scraped_media(_: &str, _: Uuid) -> Result<Vec<String>, String> {
+    Ok(vec![])
+}
 
 /// Runs the scan pipeline for a given scan job.
 ///

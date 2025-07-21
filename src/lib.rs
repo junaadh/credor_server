@@ -7,11 +7,8 @@ pub mod db;
 pub mod handlers;
 pub mod logging;
 pub mod models;
+pub mod scrapers;
 pub mod services;
-pub mod scraper {
-    pub mod client;
-    pub use client::*;
-}
 pub mod detection {
     pub mod analyzer;
     pub use analyzer::*;
@@ -24,5 +21,4 @@ pub use handlers::*;
 pub use logging::*;
 pub use models::AppState;
 pub use models::*;
-pub use scraper::*;
 pub use services::*;

@@ -3,7 +3,7 @@
 //! Tests AuthMiddleware and AdminGuard behavior, including JWT extraction and role enforcement.
 
 use actix_web::{App, test, web};
-use credor::{AppState, auth_middleware, data::Role, handlers};
+use credor_server::{AppState, auth_middleware, data::Role, handlers};
 use uuid::Uuid;
 
 #[actix_web::test]
@@ -28,14 +28,15 @@ async fn test_admin_guard_forbids_non_admin() {
     unsafe {
         std::env::set_var("TEST", "1");
     }
-    let user_ctx = auth_middleware::AuthMiddleware(auth_middleware::UserContext {
-        id: Uuid::new_v4(),
-        email: "user@example.com".to_string(),
-        role: Role::User,
-        name: Some("Test User".to_string()),
-        age: Some(30),
-        gender: Some("male".to_string()),
-    });
+    let user_ctx =
+        auth_middleware::AuthMiddleware(auth_middleware::UserContext {
+            id: Uuid::new_v4(),
+            email: "user@example.com".to_string(),
+            role: Role::User,
+            name: Some("Test User".to_string()),
+            age: Some(30),
+            gender: Some("male".to_string()),
+        });
     let result = handlers::admin::guard::admin_guard(&user_ctx);
     assert!(result.is_err());
     if let Err(resp) = result {

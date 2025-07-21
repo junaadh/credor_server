@@ -5,10 +5,17 @@
 //!
 //! All logging uses structured tracing with key fields for observability.
 
-use crate::{AppState, auth_middleware::AuthMiddleware};
+use std::env;
+
+use crate::{
+    AppState, Scraper,
+    auth_middleware::AuthMiddleware,
+    scrapers::{BlueskyAuthPayload, BlueskyScraper},
+};
 use actix_web::{HttpResponse, Responder, web};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use tracing::info;
 use uuid::Uuid;
 
 /// Represents a scan job created by a user.
@@ -59,7 +66,7 @@ pub struct ScanResult {
 /// # Request Body (JSON)
 /// ```json
 /// {
-///   "target": "https://example.com/media/video.mp4"  // String, HTTP/HTTPS URL to media
+///   "target": "deepfake"  // keyword
 /// }
 /// ```
 ///
@@ -74,7 +81,7 @@ pub struct ScanResult {
 /// {
 ///   "job_id": "550e8400-e29b-41d4-a716-446655440000",
 ///   "user_id": "123e4567-e89b-12d3-a456-426614174000",
-///   "target": "https://example.com/media/video.mp4",
+///   "target": "obama deepfake",
 ///   "status": "pending",
 ///   "created_at": "2024-01-15T10:30:00"
 /// }
@@ -106,7 +113,7 @@ pub struct ScanResult {
 ///     'Authorization': 'Bearer ' + userToken
 ///   },
 ///   body: JSON.stringify({
-///     target: 'https://example.com/suspicious-video.mp4'
+///     target: 'deepfake'
 ///   })
 /// });
 /// ```
@@ -117,17 +124,10 @@ pub async fn post_scan(
     payload: web::Json<serde_json::Value>, // expects {"target": ...}
 ) -> impl Responder {
     let db = app_state.db.clone();
-    let target = match payload.get("target").and_then(|v| v.as_str()) {
-        Some(url) if url.starts_with("http") => url,
-        _ => {
-            tracing::warn!(
-                user.id = %user.id,
-                "Invalid or missing target in scan request"
-            );
-            return HttpResponse::BadRequest()
-                .json(serde_json::json!({"error": "Invalid or missing target"}));
-        }
-    };
+    let target = payload
+        .get("target")
+        .map(|v| v.as_str().unwrap_or_default())
+        .unwrap_or_default();
     tracing::info!(
         user.id = %user.id,
         target = %target,
@@ -156,6 +156,67 @@ pub async fn post_scan(
                 target = %target,
                 "Scan job created successfully"
             );
+
+            tracing::info!(
+                user.id = %user.id,
+                job.id = %job.job_id,
+                target = %target,
+                "Starting Scraper"
+            );
+
+            let mut scraper = BlueskyScraper::new();
+            let data = if let Ok(auth) = BlueskyAuthPayload::new()
+                && scraper.auth(&auth).await.is_ok()
+            {
+                match scraper
+                    .scrape(format!("{} {target}", user.name.as_ref().unwrap()))
+                    .await
+                {
+                    Ok(d) => d,
+                    Err(e) => {
+                        return HttpResponse::InternalServerError().json(serde_json::json!({ "error": "failed to scrape data", "msg": e.to_string() }));
+                    }
+                }
+            } else {
+                return HttpResponse::InternalServerError().json(serde_json::json!({ "error": "failed to create the scraper" }));
+            };
+
+            if let Some(data) = data {
+                for post in data.posts {
+                    if let Some(image_url) = post.post.author.avatar {
+                        // for image in post. {
+                        // if let Some(image_url) = image.fullsize {
+                        match sqlx::query!(
+                                                            "INSERT INTO post_images (job_id, image_url) VALUES ($1, $2)",
+                                                            job.job_id,
+                                                            // post.post.author.handle,
+                                                            image_url,
+                                                        )
+                                                        .execute(app_state.db.as_ref()).await {
+                                Ok(_) => {},
+                                Err(e) => {
+                                    info!("{e:?}")
+                                },
+                            };
+                        // }
+                        // }
+                    }
+                }
+            }
+
+            if let Err(e) = reqwest::Client::new()
+                .post(format!(
+                    "{}/predict",
+                    env::var("AI_SERVER_IP").unwrap_or_default()
+                ))
+                .header("Content-Type", "application/json")
+                .json(&serde_json::json!({"job_id": job_id}))
+                .send()
+                .await
+            {
+                return HttpResponse::InternalServerError().json(e.to_string());
+            }
+
             HttpResponse::Ok().json(&job)
         }
         Err(e) => {
@@ -198,7 +259,7 @@ pub async fn post_scan(
 ///   {
 ///     "job_id": "550e8400-e29b-41d4-a716-446655440000",
 ///     "user_id": "123e4567-e89b-12d3-a456-426614174000",
-///     "target_url": "https://example.com/video1.mp4",
+///     "target": "https://example.com/video1.mp4",
 ///     "status": "completed",
 ///     "created_at": "2024-01-15T10:30:00"
 ///   },
@@ -234,7 +295,10 @@ pub async fn post_scan(
 /// });
 /// ```
 #[tracing::instrument(skip(user, app_state), fields(user_id = %user.id))]
-pub async fn get_history(user: AuthMiddleware, app_state: web::Data<AppState>) -> impl Responder {
+pub async fn get_history(
+    user: AuthMiddleware,
+    app_state: web::Data<AppState>,
+) -> impl Responder {
     tracing::debug!(
         user.id = %user.id,
         "Fetching scan history"
@@ -406,8 +470,9 @@ pub async fn get_scan_results(
                 job.id = %job_id,
                 "Job not found or not authorized"
             );
-            HttpResponse::NotFound()
-                .json(serde_json::json!({"error": "Job not found or not authorized"}))
+            HttpResponse::NotFound().json(
+                serde_json::json!({"error": "Job not found or not authorized"}),
+            )
         }
         Err(e) => {
             tracing::error!(
@@ -532,7 +597,8 @@ pub async fn get_scan_status(
                 error = ?e,
                 "Database error while fetching scan job status"
             );
-            HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()}))
+            HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": e.to_string()}))
         }
     }
 }

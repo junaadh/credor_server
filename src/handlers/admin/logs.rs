@@ -3,9 +3,10 @@
 //! Provides endpoints for retrieving and filtering system logs, error messages,
 //! and audit trails for administrative monitoring and debugging purposes.
 
-use crate::AppState;
 use crate::auth_middleware::AuthMiddleware;
 use crate::handlers::admin::guard::admin_guard;
+use crate::scrapers::models::{FlattenedThreadResponse, ThreadViewPost};
+use crate::{AppState, scrapers::models::FlattenedPost};
 use actix_web::{HttpResponse, Responder, web};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -160,26 +161,31 @@ pub async fn get_admin_logs(
                 error = ?e,
                 "Failed to get logs count"
             );
-            return HttpResponse::InternalServerError().json(serde_json::json!({
-                "error": "Failed to retrieve logs count"
-            }));
+            return HttpResponse::InternalServerError().json(
+                serde_json::json!({
+                    "error": "Failed to retrieve logs count"
+                }),
+            );
         }
     };
 
     // Get filtered logs with pagination
-    let logs = match get_filtered_logs(&app_state.db, &query, limit, offset).await {
-        Ok(logs) => logs,
-        Err(e) => {
-            error!(
-                admin_id = %user.id,
-                error = ?e,
-                "Failed to get filtered logs"
-            );
-            return HttpResponse::InternalServerError().json(serde_json::json!({
-                "error": "Failed to retrieve logs"
-            }));
-        }
-    };
+    let logs =
+        match get_filtered_logs(&app_state.db, &query, limit, offset).await {
+            Ok(logs) => logs,
+            Err(e) => {
+                error!(
+                    admin_id = %user.id,
+                    error = ?e,
+                    "Failed to get filtered logs"
+                );
+                return HttpResponse::InternalServerError().json(
+                    serde_json::json!({
+                        "error": "Failed to retrieve logs"
+                    }),
+                );
+            }
+        };
 
     tracing::info!(
         admin_id = %user.id,
@@ -199,7 +205,10 @@ pub async fn get_admin_logs(
 }
 
 /// Gets the total count of logs matching the filter criteria.
-async fn get_logs_count(db: &sqlx::PgPool, query: &LogQuery) -> Result<i64, sqlx::Error> {
+async fn get_logs_count(
+    db: &sqlx::PgPool,
+    query: &LogQuery,
+) -> Result<i64, sqlx::Error> {
     let count = sqlx::query_scalar!(
         r#"
         SELECT COUNT(*) as count
@@ -325,3 +334,7 @@ macro_rules! log_to_system_db {
         });
     };
 }
+
+// pub const info_tdata: Vec<FlattenedThreadResponse> = FlattenedThreadResponse::new(vec![
+//     ()
+// ]);

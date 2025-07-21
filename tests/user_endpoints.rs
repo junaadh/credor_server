@@ -3,7 +3,7 @@
 //! Each test runs in a transaction that is rolled back, ensuring DB isolation.
 
 use actix_web::{App, http::StatusCode, test, web};
-use credor::{AppState, handlers};
+use credor_server::{AppState, handlers};
 
 /// Create a mock JWT auth header for a given role.
 // fn mock_jwt_header(role: &str) -> (actix_web::http::header::HeaderName, String) {

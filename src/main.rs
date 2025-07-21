@@ -5,7 +5,7 @@
 //! Uses dotenv for config and launches the async runtime with comprehensive tracing.
 
 use actix_web::{App, HttpServer, middleware::Logger, web};
-use credor::{AppState, handlers, logging};
+use credor_server::{AppState, handlers, logging};
 use dotenv::dotenv;
 
 /// Main entry point. Configures and runs the Actix Web server.
@@ -34,6 +34,11 @@ async fn main() -> std::io::Result<()> {
             .service(
                 web::scope("/api")
                     .route("/health", web::get().to(handlers::health::health_check))
+                    .service(
+                        web::scope("/ai")
+                            .route("/job", actix_web::web::post().to(handlers::ai::job_partial_done))
+                            .route("/job/{job_id}", actix_web::web::get().to(handlers::ai::job_done))
+                    )
                     .service(
                         web::scope("/admin")
                             // Authentication routes (no admin guard required)
@@ -108,7 +113,7 @@ async fn main() -> std::io::Result<()> {
                     ),
             )
     })
-    .bind(("127.0.0.1", 8080))?
+    .bind(("0.0.0.0", 8080))?
     .run();
 
     let srv_handle = server.handle();

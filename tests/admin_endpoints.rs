@@ -3,7 +3,7 @@
 //! Each test runs in a transaction that is rolled back, ensuring DB isolation.
 
 use actix_web::{App, test, web};
-use credor::{AppState, handlers};
+use credor_server::{AppState, handlers};
 
 #[actix_web::test]
 async fn test_admin_get_users_isolated() {
@@ -23,7 +23,10 @@ async fn test_admin_get_users_isolated() {
     let req = test::TestRequest::get()
         .uri("/api/admin/users")
         .insert_header(("X-Test-Role", "admin"))
-        .insert_header(("X-Test-User-Id", "00000000-0000-0000-0000-000000000001"))
+        .insert_header((
+            "X-Test-User-Id",
+            "00000000-0000-0000-0000-000000000001",
+        ))
         .insert_header(("X-Test-Email", "admin@example.com"))
         .to_request();
 

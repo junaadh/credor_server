@@ -80,7 +80,7 @@ impl FromRequest for AuthMiddleware {
 
     fn from_request(req: &HttpRequest, _payload: &mut actix_web::dev::Payload) -> Self::Future {
         // TEST SHORT-CIRCUIT: If running in tests and test headers are present, inject a mock user context
-        if std::env::var("TEST").is_ok() {
+        if std::env::var("TEST").is_ok() && cfg!(debug_assertions) {
             if let (Some(role), Some(id), Some(email)) = (
                 req.headers()
                     .get("X-Test-Role")

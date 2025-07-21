@@ -49,7 +49,11 @@ impl<S> Layer<S> for PgLogLayer
 where
     S: Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
 {
-    fn on_event(&self, event: &Event<'_>, ctx: tracing_subscriber::layer::Context<'_, S>) {
+    fn on_event(
+        &self,
+        event: &Event<'_>,
+        ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
         // Skip certain modules to prevent infinite recursion and noise
         let target = event.metadata().target();
         if matches!(target, "sqlx::query" | "credor::logging" | "tracing") {
@@ -85,7 +89,8 @@ where
         let log = LogEntry {
             timestamp: Utc::now(),
             level: event.metadata().level().as_str().to_string(),
-            source: source.unwrap_or_else(|| event.metadata().target().to_string()),
+            source: source
+                .unwrap_or_else(|| event.metadata().target().to_string()),
             message: visitor.message.unwrap_or_else(|| "No message".into()),
             user_id: user_id.and_then(|s| Uuid::parse_str(s.as_str()).ok()),
             context: Some(JsonValue::Object(context)),
@@ -145,8 +150,10 @@ impl Visit for JsonVisitor {
             "source" => self.source = Some(value.to_string()),
             "message" => self.message = Some(value.to_string()),
             k => {
-                self.context
-                    .insert(k.to_string(), JsonValue::String(value.to_string()));
+                self.context.insert(
+                    k.to_string(),
+                    JsonValue::String(value.to_string()),
+                );
             }
         }
     }
@@ -233,11 +240,12 @@ pub fn setup_tracing(pool: Arc<PgPool>) {
         }
     });
 
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info,actix_web=info,actix_server=info,mio=info"));
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        EnvFilter::new("info,actix_web=info,actix_server=info,mio=info")
+    });
 
     let bunyan_layer = BunyanFormattingLayer::new(
-        "credor_server".into(),                                // Name of the service
+        "credor_server".into(), // Name of the service
         std::io::stdout.with_max_level(tracing::Level::TRACE), // Output
     );
 
