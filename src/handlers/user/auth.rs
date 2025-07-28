@@ -89,7 +89,8 @@ pub async fn register(
     if let Err(e) = form.validate() {
         // Logging is now automatic via tracing layer
 
-        return HttpResponse::BadRequest().json(serde_json::json!({"error": e.to_string()}));
+        return HttpResponse::BadRequest()
+            .json(serde_json::json!({"error": e.to_string()}));
     }
     tracing::info!(
         user.email = %form.email,
@@ -97,8 +98,15 @@ pub async fn register(
         "Attempting user registration"
     );
 
-    match SupabaseService::register(&data, &form.name, &form.email, &form.password, Role::User)
-        .await
+    tracing::info!("Calling SupabaseService::register...");
+    match SupabaseService::register(
+        &data,
+        &form.name,
+        &form.email,
+        &form.password,
+        Role::User,
+    )
+    .await
     {
         Ok(res) => {
             let user_id = res.user.id;

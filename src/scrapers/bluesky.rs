@@ -165,11 +165,11 @@ impl Scraper for BlueskyScraper {
                 let post_view = post;
 
                 // skip without pictures
-                // match post_view.get("embed") {
-                //     Some(serde_json::Value::Object(map)) if !map.is_empty() => {
-                //     }
-                //     _ => continue,
-                // }
+                match post_view.get("embed") {
+                    Some(serde_json::Value::Object(map)) if !map.is_empty() => {
+                    }
+                    _ => continue,
+                }
 
                 let reply_count = post["replyCount"].as_u64().unwrap_or(0);
                 if reply_count == 0 {
@@ -295,14 +295,19 @@ pub mod models {
     pub struct Embed {
         #[serde(default)]
         pub images: Vec<ImageView>,
+        pub external: Option<External>,
     }
 
     impl Embed {
-        pub fn new(imgs: Vec<&str>) -> Self {
-            Self {
-                images: imgs.into_iter().map(|x| ImageView::new(x)).collect(),
-            }
+        pub fn new(_imgs: Vec<&str>) -> Self {
+            todo!()
         }
+    }
+
+    #[derive(Debug, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct External {
+        pub thumb: Option<String>,
     }
 
     #[derive(Debug, Serialize, Deserialize)]

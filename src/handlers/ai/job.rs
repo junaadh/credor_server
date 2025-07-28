@@ -1,21 +1,23 @@
 use actix_web::{HttpResponse, Responder, web};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use tracing::{error, info, instrument};
+use tracing::{debug, error, info, instrument};
 use uuid::Uuid;
 
 use crate::{AppState, user::scan::ScanResult};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AiJobPartialDone {
-    confidence: f32,
+    confidence: f64,
     job_id: Uuid,
+    user_id: Uuid,
     detected_at: DateTime<Utc>,
     label: String,
     serial_id: u64,
+    media_url: String,
 }
 
-#[instrument(skip(app_state))]
+#[instrument(skip(app_state, payload))]
 pub async fn job_partial_done(
     app_state: web::Data<AppState>,
     payload: web::Json<AiJobPartialDone>,
@@ -24,14 +26,16 @@ pub async fn job_partial_done(
     info!("job partially completed: {result_id}");
 
     if let Err(e) = sqlx::query!(
-        "INSERT INTO scan_results (result_id, job_id, confidence, label, detected_at) VALUES ($1, $2, $3, $4, $5)",
+        "INSERT INTO scan_results (result_id, job_id, user_id, confidence, label, detected_at, media_url) VALUES ($1, $2, $3, $4, $5, $6, $7)",
         result_id,
         payload.job_id,
+        payload.user_id,
         payload.confidence as f64,
         payload.label,
-        payload.detected_at
+        payload.detected_at,
+        payload.media_url
     ).execute(app_state.db.as_ref()).await {
-        error!(
+        info!(
             job.id = %payload.job_id,
             error = ?e,
             "failed to insert scan result"
@@ -45,7 +49,7 @@ pub async fn job_partial_done(
     .execute(app_state.db.as_ref())
     .await
     {
-        error!(
+        info!(
             job.id = %payload.job_id,
             error = ?e,
             "failed to update scan job status to running",
@@ -62,7 +66,8 @@ pub async fn job_partial_done(
         job_id: payload.job_id,
         confidence: payload.confidence,
         label: payload.label.clone(),
-        created_at: payload.detected_at,
+        detected_at: payload.detected_at,
+        media_url: payload.media_url.clone(),
     }))
 }
 

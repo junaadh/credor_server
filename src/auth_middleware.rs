@@ -78,7 +78,10 @@ impl FromRequest for AuthMiddleware {
     type Error = actix_web::Error;
     type Future = BoxFuture<'static, Result<Self, Self::Error>>;
 
-    fn from_request(req: &HttpRequest, _payload: &mut actix_web::dev::Payload) -> Self::Future {
+    fn from_request(
+        req: &HttpRequest,
+        _payload: &mut actix_web::dev::Payload,
+    ) -> Self::Future {
         // TEST SHORT-CIRCUIT: If running in tests and test headers are present, inject a mock user context
         if std::env::var("TEST").is_ok() && cfg!(debug_assertions) {
             if let (Some(role), Some(id), Some(email)) = (
@@ -134,12 +137,14 @@ impl FromRequest for AuthMiddleware {
         }
 
         let req = req.clone();
-        let app_data = req.app_data::<actix_web::web::Data<AppState>>().cloned();
+        let app_data =
+            req.app_data::<actix_web::web::Data<AppState>>().cloned();
         let auth_header = req.headers().get("Authorization").cloned();
 
         Box::pin(async move {
-            let app_data =
-                app_data.ok_or_else(|| actix_web::error::ErrorUnauthorized("AppState missing"))?;
+            let app_data = app_data.ok_or_else(|| {
+                actix_web::error::ErrorUnauthorized("AppState missing")
+            })?;
 
             tracing::debug!("Extracting auth token from request");
 
@@ -195,7 +200,7 @@ impl FromRequest for AuthMiddleware {
                 ));
             }
 
-            tracing::debug!("Supabase validated token successfully");
+            tracing::info!("Supabase validated token successfully");
 
             let user: handlers::data::User = res.json().await.map_err(|e| {
                 tracing::error!(error = ?e, "Failed to parse Supabase user response");
@@ -208,26 +213,6 @@ impl FromRequest for AuthMiddleware {
                 "Successfully retrieved user data from Supabase"
             );
 
-            // Fetch extra profile fields from user_profiles
-            tracing::debug!(user_id = %user.id, "Fetching additional profile data from database");
-
-            let db = app_data.db.as_ref();
-            let user_uuid = user.id;
-            let row = sqlx::query!(
-                r#"SELECT name, age, gender FROM user_profiles WHERE user_id = $1"#,
-                user_uuid
-            )
-            .fetch_optional(db)
-            .await
-            .map_err(|e| {
-                tracing::error!(
-                    user_id = %user_uuid,
-                    error = ?e,
-                    "Failed to fetch user profile from database"
-                );
-                actix_web::error::ErrorUnauthorized("Failed to fetch user profile")
-            })?;
-
             let mut ctx = UserContext {
                 id: user.id,
                 email: user.email,
@@ -237,18 +222,40 @@ impl FromRequest for AuthMiddleware {
                 gender: None,
             };
 
-            if let Some(profile) = row {
-                tracing::debug!(
-                    user_id = %user_uuid,
-                    "Found user profile in database"
-                );
-                ctx.age = profile.age;
-                ctx.gender = profile.gender;
-            } else {
-                tracing::debug!(
-                    user_id = %user_uuid,
-                    "No user profile found in database"
-                );
+            if ctx.role == Role::User {
+                // Fetch extra profile fields from user_profiles
+                tracing::debug!(user_id = %user.id, "Fetching additional profile data from database");
+
+                let db = app_data.db.as_ref();
+                let user_uuid = user.id;
+                let row = sqlx::query!(
+                    r#"SELECT name, age, gender FROM user_profiles WHERE user_id = $1"#,
+                    user_uuid
+                )
+                .fetch_optional(db)
+                .await
+                .map_err(|e| {
+                    tracing::error!(
+                        user_id = %user_uuid,
+                        error = ?e,
+                        "Failed to fetch user profile from database"
+                    );
+                    actix_web::error::ErrorUnauthorized("Failed to fetch user profile")
+                })?;
+
+                if let Some(profile) = row {
+                    tracing::debug!(
+                        user_id = %user_uuid,
+                        "Found user profile in database"
+                    );
+                    ctx.age = profile.age;
+                    ctx.gender = profile.gender;
+                } else {
+                    tracing::debug!(
+                        user_id = %user_uuid,
+                        "No user profile found in database"
+                    );
+                }
             }
 
             tracing::info!(

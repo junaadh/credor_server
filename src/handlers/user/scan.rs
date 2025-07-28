@@ -41,11 +41,12 @@ pub struct ScanResult {
     /// Associated scan job
     pub job_id: Uuid,
     /// Deepfake confidence score (0.0-1.0)
-    pub confidence: f32,
+    pub confidence: f64,
     /// Model label (e.g., "REAL", "FAKE")
     pub label: String,
     /// When the result was created
-    pub created_at: DateTime<Utc>,
+    pub detected_at: DateTime<Utc>,
+    pub media_url: String,
 }
 
 /// Creates a new deepfake detection scan job for the authenticated user.
@@ -183,23 +184,40 @@ pub async fn post_scan(
 
             if let Some(data) = data {
                 for post in data.posts {
-                    if let Some(image_url) = post.post.author.avatar {
-                        // for image in post. {
-                        // if let Some(image_url) = image.fullsize {
-                        match sqlx::query!(
-                                                            "INSERT INTO post_images (job_id, image_url) VALUES ($1, $2)",
-                                                            job.job_id,
-                                                            // post.post.author.handle,
-                                                            image_url,
-                                                        )
-                                                        .execute(app_state.db.as_ref()).await {
-                                Ok(_) => {},
-                                Err(e) => {
-                                    info!("{e:?}")
-                                },
-                            };
-                        // }
-                        // }
+                    if let Some(embed) = post.post.embed {
+                        for image in embed.images {
+                            if let Some(image_url) = image.fullsize {
+                                match sqlx::query!(
+                                    "INSERT INTO post_images (job_id, image_url) VALUES ($1, $2)",
+                                    job.job_id,
+                                    // post.post.author.handle,
+                                    image_url,
+                                )
+                                .execute(app_state.db.as_ref()).await {
+                                    Ok(_) => {},
+                                    Err(e) => {
+                                        info!("{e:?}")
+                                    },
+                                };
+                            }
+                        }
+
+                        if let Some(ext) = embed.external {
+                            if let Some(image_url) = ext.thumb {
+                                match sqlx::query!(
+                                    "INSERT INTO post_images (job_id, image_url) VALUES ($1, $2)",
+                                    job.job_id,
+                                    // post.post.author.handle,
+                                    image_url,
+                                )
+                                .execute(app_state.db.as_ref()).await {
+                                    Ok(_) => {},
+                                    Err(e) => {
+                                        info!("{e:?}")
+                                    },
+                                };
+                            }
+                        }
                     }
                 }
             }
@@ -210,7 +228,9 @@ pub async fn post_scan(
                     env::var("AI_SERVER_IP").unwrap_or_default()
                 ))
                 .header("Content-Type", "application/json")
-                .json(&serde_json::json!({"job_id": job_id}))
+                .json(
+                    &serde_json::json!({"job_id": job_id, "user_id": user.id}),
+                )
                 .send()
                 .await
             {
@@ -437,7 +457,7 @@ pub async fn get_scan_results(
     match job {
         Ok(Some(_)) => {
             let results = sqlx::query_as::<_, ScanResult>(
-                r#"SELECT result_id, job_id, confidence, label, created_at FROM scan_results WHERE job_id = $1 ORDER BY created_at DESC"#,
+                r#"SELECT result_id, job_id, confidence, label, detected_at, media_url FROM scan_results WHERE job_id = $1 ORDER BY detected_at DESC"#,
             )
             .bind(job_id)
             .fetch_all(app_state.db.as_ref())
