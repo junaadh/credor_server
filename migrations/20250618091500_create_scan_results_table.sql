@@ -3,6 +3,7 @@ CREATE TABLE IF NOT EXISTS scan_results (
     job_id UUID REFERENCES scan_jobs(job_id),
     user_id UUID NOT NULL REFERENCES user_profiles(user_id),
     media_url TEXT,
+    post_url TEXT,
     confidence FLOAT,
     label TEXT,
     detected_at TIMESTAMPTZ DEFAULT NOW()

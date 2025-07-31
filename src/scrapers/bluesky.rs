@@ -231,37 +231,12 @@ pub mod models {
         pub posts: Vec<FlattenedPost>,
     }
 
-    impl FlattenedThreadResponse {
-        pub fn new(data: Vec<(u32, Vec<&str>)>) -> Self {
-            Self {
-                cursor: "0".to_string(),
-                posts: data
-                    .into_iter()
-                    .map(|(r, i)| FlattenedPost::new(r, i))
-                    .collect(),
-            }
-        }
-    }
-
     #[derive(Debug, Serialize, Deserialize)]
     #[serde(rename_all = "camelCase")]
     pub struct FlattenedPost {
         pub post: PostView,
         // #[serde(default)]
         // pub flattened_replies: Vec<PostView>,
-    }
-
-    impl FlattenedPost {
-        pub fn new(reply: u32, imgs: Vec<&str>) -> Self {
-            // Self {
-            // post: PostView {
-            //     author: Author { handle: "", display_name: (), avatar: () }
-            //     embed: Some(Embed::new(imgs)),
-            //     reply_count: Some(reply),
-            // },
-            // }
-            todo!()
-        }
     }
 
     #[derive(Debug, Serialize, Deserialize)]
@@ -275,7 +250,7 @@ pub mod models {
     #[derive(Debug, Serialize, Deserialize)]
     #[serde(rename_all = "camelCase")]
     pub struct PostView {
-        // pub uri: String,
+        pub uri: String,
         pub author: Author,
         #[serde(default)]
         pub embed: Option<Embed>,
@@ -298,12 +273,6 @@ pub mod models {
         pub external: Option<External>,
     }
 
-    impl Embed {
-        pub fn new(_imgs: Vec<&str>) -> Self {
-            todo!()
-        }
-    }
-
     #[derive(Debug, Serialize, Deserialize)]
     #[serde(rename_all = "camelCase")]
     pub struct External {
@@ -314,14 +283,6 @@ pub mod models {
     #[serde(rename_all = "camelCase")]
     pub struct ImageView {
         pub fullsize: Option<String>,
-    }
-
-    impl ImageView {
-        pub fn new(imgs: &str) -> Self {
-            Self {
-                fullsize: Some(imgs.to_string()),
-            }
-        }
     }
 }
 

@@ -141,7 +141,10 @@ pub struct AdminUserProfile {
 /// Retrieves a comprehensive list of all user profiles and account information for admin review.
 /// Adds tracing instrumentation and logs key events and errors with structured fields.
 #[tracing::instrument(skip(user, app_state), fields(admin_id = %user.id))]
-pub async fn get_users(user: AuthMiddleware, app_state: web::Data<AppState>) -> impl Responder {
+pub async fn get_users(
+    user: AuthMiddleware,
+    app_state: web::Data<AppState>,
+) -> impl Responder {
     if let Err(resp) = admin_guard(&user) {
         return resp;
     }

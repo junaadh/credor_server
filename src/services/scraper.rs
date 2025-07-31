@@ -2,7 +2,7 @@ use std::{num::NonZero, sync::Arc};
 
 use governor::{DefaultDirectRateLimiter, Quota, RateLimiter};
 use serde::{Deserialize, Serialize};
-use tracing::{info, trace};
+use tracing::trace;
 
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize,

@@ -28,6 +28,7 @@ async fn main() -> std::io::Result<()> {
     let server = HttpServer::new(move || {
         App::new()
             .app_data(web::Data::new(app_state.clone()))
+            .app_data(web::PayloadConfig::new(49 * 1024 * 1024))
             // Add comprehensive logging middleware
             // TracingLogger is already included in setup_tracing, so only keep Logger if desired
             .wrap(Logger::default())
@@ -38,6 +39,10 @@ async fn main() -> std::io::Result<()> {
                         web::scope("/ai")
                             .route("/job", actix_web::web::post().to(handlers::ai::job_partial_done))
                             .route("/job/{job_id}", actix_web::web::get().to(handlers::ai::job_done))
+                    )
+                    .service(
+                        web::scope("/auth")
+                            .route("/email", actix_web::web::get().to(handlers::auth::validate_unused_email))
                     )
                     .service(
                         web::scope("/admin")
@@ -86,7 +91,8 @@ async fn main() -> std::io::Result<()> {
                             .route(
                                 "/logs",
                                 actix_web::web::get().to(handlers::admin::logs::get_admin_logs),
-                            ),
+                            )
+                            .route("/bucket", web::get().to(handlers::admin::bucket::handle_retrieve))
                     )
                     .service(
                         web::scope("/user")
@@ -96,6 +102,7 @@ async fn main() -> std::io::Result<()> {
                             .route("/delete", web::delete().to(handlers::user::delete_account))
                             // Profile management
                             .route("/profile", web::put().to(handlers::user::update_profile))
+                            .route("/profile", web::get().to(handlers::user::get_profile))
                             // Settings management
                             .route("/settings", web::get().to(handlers::user::get_settings))
                             .route("/settings", web::patch().to(handlers::user::patch_settings))
@@ -109,7 +116,9 @@ async fn main() -> std::io::Result<()> {
                             .route(
                                 "/scan/{job_id}/status",
                                 web::get().to(handlers::user::get_scan_status),
-                            ),
+                            )
+                            .route("/bucket", web::post().to(handlers::user::handle_upload))
+                            .route("/bucket", web::get().to(handlers::user::handle_retrieve))
                     ),
             )
     })

@@ -28,18 +28,17 @@
 //! ).await?;
 //! ```
 
-use actix_web::web;
-use anyhow::Result;
-use reqwest::Client;
-use serde::{Deserialize, Serialize};
-use uuid::Uuid;
-
 use crate::{
     AppState, AuthMiddleware,
     admin::guard,
     data::{AuthError, AuthResponse, Role},
     handlers,
 };
+use actix_web::web;
+use anyhow::Result;
+use reqwest::{Client, StatusCode, header::CONTENT_TYPE};
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 /// Error response structure returned by Supabase Auth API.
 ///
@@ -325,7 +324,8 @@ impl SupabaseService {
             return Err(SupabaseErrorResponse {
                 code: 403,
                 error_code: "forbidden".to_string(),
-                msg: "You are not authorized to perform this action.".to_string(),
+                msg: "You are not authorized to perform this action."
+                    .to_string(),
             });
         }
 
@@ -486,24 +486,118 @@ impl SupabaseService {
 
         Ok(())
     }
+
+    pub async fn upload(
+        data: &web::Data<AppState>,
+        user: &AuthMiddleware,
+        ext: &str,
+        bytes: &[u8],
+    ) -> Result<UploadResponse, actix_web::Error> {
+        let user_id = user.id;
+        let url = format!(
+            "{}/storage/v1/object/faces/{user_id}.{ext}",
+            data.supabase_url
+        );
+
+        let res = reqwest::Client::new()
+            .post(&url)
+            .header("Content-Type", format!("image/{ext}"))
+            .header(
+                "Authorization",
+                format!("Bearer {}", data.supabase_service_key),
+            )
+            .header("x-upsert", "true") // overwrite if exists
+            .body(bytes.to_vec())
+            .send()
+            .await
+            .map_err(|e| {
+                actix_web::error::ErrorBadGateway(format!("Upload failed: {e}"))
+            })?;
+
+        if res.status().is_success() {
+            match res.json::<UploadResponse>().await.map_err(|x| {
+                actix_web::error::ErrorNotAcceptable(format!(
+                    "Invalid response from supabase: {x}"
+                ))
+            }) {
+                Ok(o) => Ok(o),
+                Err(e) => Err(e),
+            }
+        } else {
+            let text = res.text().await.unwrap_or_default();
+            Err(actix_web::error::ErrorBadRequest(format!(
+                "Upload failed: {text}"
+            )))
+        }
+    }
+
+    pub async fn retrieve(
+        data: &web::Data<AppState>,
+        key: &str,
+    ) -> Result<RetrievedImage, actix_web::Error> {
+        let url = format!("{}/storage/v1/object/{key}", data.supabase_url);
+        let res = reqwest::Client::new()
+            .get(&url)
+            .header(
+                "Authorization",
+                format!("Bearer {}", data.supabase_service_key),
+            )
+            .send()
+            .await
+            .map_err(|e| {
+                actix_web::error::ErrorBadGateway(format!(
+                    "Request failed: {e}"
+                ))
+            })?;
+
+        if res.status() == StatusCode::OK {
+            let content_type = res
+                .headers()
+                .get(CONTENT_TYPE)
+                .and_then(|h| h.to_str().ok())
+                .unwrap_or("application/octet-stream")
+                .to_string();
+
+            let bytes = res
+                .bytes()
+                .await
+                .map_err(actix_web::error::ErrorInternalServerError)?;
+
+            Ok(RetrievedImage {
+                mime: content_type,
+                bytes: bytes.to_vec(),
+            })
+        } else if res.status() == StatusCode::NOT_FOUND {
+            Err(actix_web::error::ErrorNotFound("File not found"))
+        } else {
+            let body = res.text().await.unwrap_or_default();
+            Err(actix_web::error::ErrorBadRequest(format!(
+                "Supabase responded with error: {body}"
+            )))
+        }
+    }
 }
 
 use validator::Validate;
 
 #[derive(Debug, Deserialize, Validate)]
 pub struct UpdateUserInput {
-    #[validate(email(message = "Invalid email"))]
+    #[validate(email(message = "Invalid email "))]
     #[serde(default)]
     pub email: Option<String>,
 
-    #[validate(length(min = 8, max = 64, message = "Password must be at least 8 characters"))]
+    #[validate(length(
+        min = 8,
+        max = 64,
+        message = "Password must be at least 8 characters "
+    ))]
     #[serde(default)]
     pub password: Option<String>,
 
     #[serde(default)]
     pub role: Option<Role>,
 
-    #[validate(length(min = 1, message = "Name cannot be empty"))]
+    #[validate(length(min = 1, message = "Name cannot be empty "))]
     #[serde(default)]
     pub name: Option<String>,
 
@@ -527,4 +621,17 @@ pub struct UpdateUserInput {
 
     #[serde(default)]
     pub timezone: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Validate)]
+pub struct UploadResponse {
+    #[serde(rename = "Key")]
+    pub key: String,
+    #[serde(rename = "Id")]
+    pub id: Uuid,
+}
+
+pub struct RetrievedImage {
+    pub mime: String,
+    pub bytes: Vec<u8>,
 }

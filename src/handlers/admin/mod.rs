@@ -6,6 +6,7 @@
 
 pub mod analytics;
 pub mod auth;
+pub mod bucket;
 pub mod guard;
 pub mod health;
 pub mod logs;

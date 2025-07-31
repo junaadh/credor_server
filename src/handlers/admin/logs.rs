@@ -3,10 +3,9 @@
 //! Provides endpoints for retrieving and filtering system logs, error messages,
 //! and audit trails for administrative monitoring and debugging purposes.
 
+use crate::AppState;
 use crate::auth_middleware::AuthMiddleware;
 use crate::handlers::admin::guard::admin_guard;
-use crate::scrapers::models::{FlattenedThreadResponse, ThreadViewPost};
-use crate::{AppState, scrapers::models::FlattenedPost};
 use actix_web::{HttpResponse, Responder, web};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

@@ -2,6 +2,7 @@
 //!
 //! Re-exports all user-related endpoint handlers for profile, scan, delete, and settings management.
 pub mod auth;
+pub mod bucket;
 pub mod delete;
 pub mod profile;
 pub mod scan;
@@ -11,6 +12,7 @@ use actix_web::web;
 
 pub use self::{
     auth::*,
+    bucket::*,
     delete::*,
     profile::*,
     scan::{get_history, get_scan_results, get_scan_status, post_scan},
