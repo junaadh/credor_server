@@ -174,12 +174,20 @@ pub async fn post_scan(
                     .scrape(format!("{} {target}", user.name.as_ref().unwrap()))
                     .await
                 {
-                    Ok(d) => d,
+                    Ok(d) => {
+                        tracing::info!(
+                            user.id = %user.id,
+                            "Scraping completed successfully"
+                        );
+                        d
+                    }
                     Err(e) => {
+                        tracing::info!(%e, "Scraping failed");
                         return HttpResponse::InternalServerError().json(serde_json::json!({ "error": "failed to scrape data", "msg": e.to_string() }));
                     }
                 }
             } else {
+                tracing::info!(user.id = %user.id, "Failed to authenticate scraper");
                 return HttpResponse::InternalServerError().json(serde_json::json!({ "error": "failed to create the scraper" }));
             };
 
